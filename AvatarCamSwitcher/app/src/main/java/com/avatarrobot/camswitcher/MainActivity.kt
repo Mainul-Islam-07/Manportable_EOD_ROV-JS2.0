@@ -52,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cover: View
     private lateinit var btnRecord: Button
     private lateinit var txtRec: TextView
+    private lateinit var txtBattery: TextView
     private lateinit var zoomBar: View
     private lateinit var gimbalPanel: View
     private val buttons = mutableMapOf<CameraFeed, Button>()
@@ -59,6 +60,13 @@ class MainActivity : AppCompatActivity() {
 
     // SIYI A8 mini pan/tilt over UDP (192.168.144.25:37260). MAIN-feed only.
     private val gimbal = SiyiGimbalController()
+
+    // Main-pack battery % from the rover telemetry bridge (UDP :9870). Bound while
+    // foreground, released in onPause so the dashboard app can own the port when we
+    // background (never both foreground at once).
+    private val batteryReceiver by lazy {
+        BatteryTelemetryReceiver(onBattery = { pct -> runOnUiThread { updateBattery(pct) } })
+    }
 
     // Two-way intercom over UDP with the rover host (192.168.144.10:5555).
     // Half-duplex push-to-talk: resting = listening (speaker on), pressed = talking
@@ -138,6 +146,7 @@ class MainActivity : AppCompatActivity() {
         cover     = findViewById(R.id.transition_cover)
         btnRecord = findViewById(R.id.btn_record)
         txtRec    = findViewById(R.id.txt_rec)
+        txtBattery = findViewById(R.id.txt_battery)
         zoomBar     = findViewById(R.id.zoom_bar)
         gimbalPanel = findViewById(R.id.gimbal_panel)
         btnTalk     = findViewById(R.id.btn_talk)
@@ -211,7 +220,22 @@ class MainActivity : AppCompatActivity() {
         btnRecord.setOnClickListener { toggleRecording() }
         highlightActive(currentFeed)
         updateZoomControls(currentFeed)
+        updateBattery(-1)                  // grey "--" until the first packet
         showCover()
+    }
+
+    // Main-pack charge chip (top-right). Mirrors the dashboard BatteryChip:
+    // green >=50, amber >=20, red below, grey when unknown (pct outside 0..100).
+    private fun updateBattery(pct: Int) {
+        val known = pct in 0..100
+        val color = when {
+            !known    -> 0xFF9E9E9E.toInt()   // grey
+            pct >= 50 -> 0xFF2E7D32.toInt()   // green
+            pct >= 20 -> 0xFFF9A825.toInt()   // amber
+            else      -> 0xFFD32F2F.toInt()   // red
+        }
+        txtBattery.text = if (known) "● $pct%" else "● --"
+        txtBattery.setTextColor(color)
     }
 
     private fun wireButtons() {
@@ -471,6 +495,8 @@ class MainActivity : AppCompatActivity() {
         onRecordingStateChanged(ScreenRecordService.isRecording)
         // Resting intercom state: audio on, mic off (until the user presses talk).
         startListening()
+        // Listen for battery telemetry while foreground; released in onPause.
+        batteryReceiver.start()
         if (surfaceReady) {
             pendingFeed = currentFeed
             showCover()
@@ -486,6 +512,8 @@ class MainActivity : AppCompatActivity() {
         mainHandler.removeCallbacks(forceStartRunnable)
         mainHandler.removeCallbacks(retryRunnable)
         rtspView.stop()
+        // Release the telemetry socket so the dashboard can own :9870 when we leave.
+        batteryReceiver.stop()
         // Halt the gimbal so it never keeps slewing while the app is backgrounded.
         gimbal.stopMove()
         // Release the mic/speaker so we don't hold the mic or play audio in the

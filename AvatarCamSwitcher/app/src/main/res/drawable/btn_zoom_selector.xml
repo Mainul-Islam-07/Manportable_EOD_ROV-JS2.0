@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Zoom-column key background. Opaque gray idle (matches the gimbal D-pad keys)
+     so it stays legible over the video instead of looking transparent; lighter
+     gray while pressed; green when selected to mark the active zoom level.
+     Kept separate from btn_cam_selector so the bottom-nav camera buttons,
+     which share that drawable, are unaffected. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Active zoom level: highlighted green, same as the live-feed selector. -->
+    <item android:state_selected="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/active_green" />
+            <corners android:radius="8dp" />
+            <stroke android:width="2dp" android:color="@color/active_green_stroke" />
+        </shape>
+    </item>
+
+    <!-- Pressed feedback: lighter gray (matches bg_gimbal_key). -->
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#FF9E9E9E" />
+            <corners android:radius="8dp" />
+        </shape>
+    </item>
+
+    <!-- Idle: opaque dark gray (matches bg_gimbal_key). -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#E0616161" />
+            <corners android:radius="8dp" />
+        </shape>
+    </item>
+</selector>

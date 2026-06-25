@@ -30,12 +30,33 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Recording timer indicator (top-right). Hidden unless recording. -->
+    <!-- Main-pack battery charge (top-right). Always visible; shows a placeholder
+         until the first telemetry packet. Text + leading dot are colour-coded by
+         level in code. -->
+    <TextView
+        android:id="@+id/txt_battery"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:layout_marginEnd="12dp"
+        android:background="@drawable/txt_rec_bg"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="4dp"
+        android:fontFamily="monospace"
+        android:textColor="#9E9E9E"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        tools:text="● 85%"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Recording timer indicator (top-right, under the battery chip). Hidden
+         unless recording. -->
     <TextView
         android:id="@+id/txt_rec"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="6dp"
         android:layout_marginEnd="12dp"
         android:background="@drawable/txt_rec_bg"
         android:paddingHorizontal="10dp"
@@ -47,7 +68,7 @@
         android:visibility="gone"
         tools:visibility="visible"
         tools:text="● REC  00:12"
-        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/txt_battery"
         app:layout_constraintEnd_toEndOf="parent" />
 
     <!-- Record toggle (top-left). Text flips between ● REC and ■ STOP; tint flips
