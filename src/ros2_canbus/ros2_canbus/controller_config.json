@@ -1,0 +1,144 @@
+{
+    "settings_file": "/home/jontro_soinik_2_0-2/ros2_ws/src/ros2_canbus/ros2_canbus/JS2_Motor_CANOpen_Lib_V_1_0/Motor_Settings/motor_settings.xlsx",
+
+    "state_machine": {
+        "idle_seconds"          : 300.0,
+        "re_arm_wait_s"         : 0.2,
+        "eps_cnt"               : 5,
+        "eps_vel_can"           : 1,
+        "eps_torque_can"        : 1
+    },
+
+    "rates_hz": {
+        "motor_cmd"             : 50.0
+    },
+
+    "timing": {
+        "idle_tick_s"           : 0.2,
+        "shutdown_disarm_grace_s": 0.3,
+        "startup_battery_wait_s" : 60.0,
+        "heartbeat_wait_s"     : 6.0,
+        "heartbeat_fault_timeout_s": 3.0,
+        "hb_poll_rate_hz"      : 2.0,
+        "hb_liveness_timeout_s": 2.5,
+        "diag_publish_rate_hz" : 5.0
+    },
+
+    "ros_queue_depth": 10,
+
+    "heartbeat_node": {
+        "ros_node_name"         : "motor_heartbeat",
+
+        "arm_can": {
+            "config_name"       : "Arm_CAN_Config.json",
+            "master_role"       : "Master",
+            "master_node_id"    : 1
+        },
+
+        "drive_can": {
+            "config_name"       : "Drive_CAN_Config.json",
+            "master_role"       : "Master",
+            "master_node_id"    : 1
+        },
+
+        "arm_bus_filter": [
+            "Turret", "Left_Differential", "Right_Differential",
+            "Telescopic", "Wrist", "Gripper_360", "Gripper"
+        ],
+
+        "drive_bus_filter": [
+            "Left_Drive", "Right_Drive", "Front_Flipper", "Rear_Flipper"
+        ],
+
+        "topics": {
+            "arm_active_motors"     : "/arm_active_motors",
+            "drive_active_motors"   : "/drive_active_motors",
+            "diagnostics"           : "/motor_diagnostics",
+            "arm_fault_stop"        : "/arm_fault_stop",
+            "drive_fault_stop"      : "/drive_fault_stop"
+        }
+    },
+
+    "battery_monitor": {
+        "ros_node_name"         : "battery_monitor",
+
+        "topics": {
+            "drive_battery_ok"      : "/drive_memory_battery_ok",
+            "arm_battery_ok"        : "/arm_memory_battery_ok",
+            "drive_battery_voltage" : "/drive_memory_battery_voltage",
+            "arm_battery_voltage"   : "/arm_memory_battery_voltage"
+        }
+    },
+
+    "arm_controller": {
+        "ros_node_name"         : "motor_controller",
+
+        "topics": {
+            "arm_cmd"           : "/arm_joint_commands",
+            "sbus_js"           : "/sbus/joint_states",
+            "flipper_feedback"  : "/drive_flipper_states",
+            "motor_commands"    : "/motor_commands",
+            "joint_states"      : "/joint_states"
+        },
+
+        "joints": {
+            "arm_joints": [
+                "turret_Joint", "shoulder_Joint", "elbow_Joint",
+                "telescope_Joint", "wrist_pan_Joint", "wrist_roll_Joint"
+            ],
+            "flipper_joints": [
+                "front_flipper_Joint", "rear_flipper_Joint"
+            ]
+        },
+
+        "sbus_indices": {
+            "gripper_effort"    : 2
+        },
+
+        "parameters": {
+            "telescope_lead_m_per_rev"          : 0.01,
+            "csp_profile_vel_frac"              : 0.05,
+            "telescope_csp_profile_vel_frac"    : 1.00
+        }
+    },
+
+    "drive_controller": {
+        "ros_node_name"         : "drive_controller",
+
+        "topics": {
+            "flipper_cmd"       : "/flipper_joint_commands",
+            "sbus_js"           : "/sbus/joint_states",
+            "motor_commands"    : "/drive_motor_commands",
+            "joint_states"      : "/drive_flipper_states"
+        },
+
+        "joints": {
+            "flipper_joints": [
+                "front_flipper_Joint", "rear_flipper_Joint"
+            ]
+        },
+
+        "sbus_indices": {
+            "left_drive_velocity"   : 0,
+            "right_drive_velocity"  : 1
+        },
+
+        "parameters": {
+            "drive_velocity_scale"      : 0.0665,
+            "csp_profile_vel_frac"      : 0.05,
+            "flipper_csp_profile_vel_frac" : 0.80,
+
+            "flipper_worm_gear_ratio"   : 36,
+
+            "drive_direction": {
+                "Left_Drive"            :  1,
+                "Right_Drive"           : -1
+            },
+
+            "flipper_direction": {
+                "Front_Flipper"         : -1,
+                "Rear_Flipper"          :  1
+            }
+        }
+    }
+}

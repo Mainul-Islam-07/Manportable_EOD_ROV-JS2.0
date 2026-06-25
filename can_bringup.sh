@@ -1,0 +1,36 @@
+#!/bin/bash
+# can_bringup.sh — bring up both CAN buses using persistent names
+# ─────────────────────────────────────────────────────────────────
+# Requires: 90-can-persistent.rules installed in /etc/udev/rules.d/
+#
+# Usage:  sudo ./can_bringup.sh
+
+set -e
+
+BITRATE=1000000
+
+echo "[CAN] Loading kernel modules..."
+sudo modprobe can
+sudo modprobe can_raw
+sudo modprobe can_dev
+sudo modprobe gs_usb
+sudo modprobe peak_usb
+
+# ── Drive bus (USB port 1-1) ──────────────────────────────────────
+echo "[CAN] Bringing up can_drive..."
+sudo ip link set can_drive down 2>/dev/null || true
+sudo ip link set can_drive up type can bitrate $BITRATE
+echo "[CAN] can_drive UP:"
+ip -details link show can_drive
+
+# ── Arm bus (USB port 3-1) ────────────────────────────────────────
+echo "[CAN] Bringing up can_arm..."
+sudo ip link set can_arm down 2>/dev/null || true
+sudo ip link set can_arm up type can bitrate $BITRATE
+echo "[CAN] can_arm UP:"
+ip -details link show can_arm
+
+echo ""
+echo "[CAN] Both buses ready."
+echo "  can_drive  →  USB port 1-1 (Drive: Left_Drive, Right_Drive, Front_Flipper, Rear_Flipper)"
+echo "  can_arm    →  USB port 3-1 (Arm: Turret, Differentials, Telescopic, Wrist, Gripper)"

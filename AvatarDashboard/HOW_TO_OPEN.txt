@@ -1,0 +1,18 @@
+HOW TO OPEN (simple path)
+=========================
+
+1. Open Android Studio.
+2. File > Open…  →  select the  AvatarDashboard  folder (this folder).
+3. Wait for "Gradle sync" to finish (first time downloads Gradle 8.7 +
+   dependencies — needs internet, a few minutes).
+4. Press the green Run button, target = your MK32 (or any Android device).
+
+That's it. Android Studio creates local.properties automatically with your
+SDK path on first open.
+
+If sync ever fails with "prepareKotlinBuildScriptModel not found":
+  - File > Sync Project with Gradle Files
+  - or File > Invalidate Caches… > Invalidate and Restart
+
+The Gradle wrapper (gradlew, gradle/wrapper/gradle-wrapper.jar) is included,
+so the project is self-contained — you do NOT need Gradle installed.

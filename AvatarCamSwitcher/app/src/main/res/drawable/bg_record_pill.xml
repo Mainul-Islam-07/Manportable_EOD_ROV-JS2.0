@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Neutral white rounded pill. The actual color is applied at runtime via
+     backgroundTint (red while recording, grey when idle), so a white base lets
+     the tint render as its true color. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FFFFFFFF" />
+    <corners android:radius="22dp" />
+</shape>

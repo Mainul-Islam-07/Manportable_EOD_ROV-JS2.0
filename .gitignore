@@ -1,0 +1,35 @@
+# ---- Android / Gradle ----
+.gradle/
+build/
+**/build/
+.cxx/
+local.properties
+*.apk
+*.aab
+*.dex
+captures/
+.externalNativeBuild/
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ---- ROS2 build outputs ----
+install/
+log/
+build/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Logs / misc ----
+*.log

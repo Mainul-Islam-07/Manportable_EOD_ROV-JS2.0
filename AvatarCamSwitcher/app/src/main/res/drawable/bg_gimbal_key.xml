@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Grey, mostly-opaque key used by the gimbal pan/tilt D-pad. Lighter grey
+     while pressed for touch feedback. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#FF9E9E9E" />
+            <corners android:radius="8dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#E0616161" />
+            <corners android:radius="8dp" />
+        </shape>
+    </item>
+</selector>

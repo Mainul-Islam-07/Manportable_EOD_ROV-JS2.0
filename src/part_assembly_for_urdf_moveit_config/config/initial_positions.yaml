@@ -1,0 +1,11 @@
+# Default initial positions for part_assembly_for_urdf's ros2_control fake system
+
+initial_positions:
+  turret_Joint: 0
+  shoulder_Joint: 0
+  elbow_Joint: 0
+  telescope_Joint: 0
+  wrist_pan_Joint: 0
+  wrist_roll_Joint: 0
+  front_flipper_Joint: 0
+  rear_flipper_Joint: 0

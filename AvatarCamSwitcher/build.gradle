@@ -1,0 +1,23 @@
+// ============================================================================
+//  Top-level (Project) build.gradle
+// ============================================================================
+plugins {
+    // AGP 8.6.0 is the minimum that can compile against API 35; it still runs on
+    // the Gradle 8.7 pinned by the wrapper, so no wrapper change is needed.
+    id 'com.android.application'        version '8.6.0'  apply false
+    // Kotlin must be >= the version the library was built with. rtsp-client-android
+    // 5.6.4 ships Kotlin 2.2.0 metadata, which the old 1.9.x compiler cannot read,
+    // so we match it at 2.2.0. (Compatible with AGP 8.6.0 and Gradle 8.7.)
+    id 'org.jetbrains.kotlin.android'   version '2.2.0'  apply false
+}
+
+// JitPack repository declaration (required to resolve the RTSP engine).
+// Because settings.gradle uses RepositoriesMode.PREFER_SETTINGS, this block is
+// honoured for every module instead of being rejected.
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }   // <-- com.github.alexeyvasilyev:rtsp-client-android
+    }
+}

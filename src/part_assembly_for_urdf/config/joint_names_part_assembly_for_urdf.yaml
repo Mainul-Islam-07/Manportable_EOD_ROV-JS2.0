@@ -1,0 +1,1 @@
+controller_joint_names: ['', 'turret_Joint', 'shoulder_Joint', 'elbow_Joint', 'telescope_Joint', 'wrist_pan_Joint', 'wrist_roll_Joint', 'front_flipper_Joint', 'rear_flipper_Joint', ]

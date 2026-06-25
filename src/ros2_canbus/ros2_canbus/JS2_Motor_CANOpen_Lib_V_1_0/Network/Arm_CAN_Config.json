@@ -1,0 +1,7 @@
+{
+    "network": {
+        "interface": "socketcan",
+        "channel": "can_arm",
+        "bitrate": 1000000
+    }
+}

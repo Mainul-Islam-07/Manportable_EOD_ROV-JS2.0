@@ -1,0 +1,22 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    // PREFER_SETTINGS keeps the JitPack repo declared in the project-level
+    // build.gradle valid instead of throwing the usual "repositories not allowed
+    // in build.gradle" error that FAIL_ON_PROJECT_REPOS would raise.
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }   // hosts alexeyvasilyev/rtsp-client-android
+    }
+}
+
+rootProject.name = "JS2.0"
+include ':app'

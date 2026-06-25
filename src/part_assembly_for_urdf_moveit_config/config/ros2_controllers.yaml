@@ -1,0 +1,56 @@
+# ros2_controllers.yaml — ros2_control controller configuration
+# The joint_state_broadcaster publishes ALL joint states (arm + flippers)
+# so MoveIt knows the current flipper positions for collision avoidance.
+# The arm_controller only commands the 6 arm joints.
+# The flipper_controller commands the 2 flipper joints.
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    # joint_state_broadcaster:
+    #   type: joint_state_broadcaster/JointStateBroadcaster
+
+    flipper_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+arm_controller:
+  ros__parameters:
+    joints:
+      - turret_Joint
+      - shoulder_Joint
+      - elbow_Joint
+      - telescope_Joint
+      - wrist_pan_Joint
+      - wrist_roll_Joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+flipper_controller:
+  ros__parameters:
+    joints:
+      - front_flipper_Joint
+      - rear_flipper_Joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0

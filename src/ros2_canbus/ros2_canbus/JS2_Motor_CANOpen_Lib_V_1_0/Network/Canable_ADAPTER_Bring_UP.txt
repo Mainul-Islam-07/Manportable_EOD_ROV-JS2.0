@@ -1,0 +1,12 @@
+# sudo apt update
+# sudo apt install can-utils
+sudo modprobe can
+sudo modprobe can_raw
+sudo modprobe can_dev
+sudo modprobe gs_usb
+sudo modprobe peak_usb
+sudo ip link set can0 down
+sudo ip link set can0 up type can bitrate 1000000
+# sudo ip link set can0 up type can bitrate 1000000 restart-ms 100
+ip -details link show can0
+

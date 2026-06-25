@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="horizontal"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="6dp">
+
+    <!-- LEFT HALF: keypad -->
+    <LinearLayout
+        android:orientation="vertical"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1">
+
+        <TextView
+            android:id="@+id/passwordDisplay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Enter password"
+            android:textSize="28sp"
+            android:padding="10dp"
+            android:background="#EEEEEE"
+            android:gravity="center"/>
+
+        <GridLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:columnCount="3"
+            android:rowCount="4">
+
+            <Button android:id="@+id/btn1" android:text="1"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+            <Button android:id="@+id/btn2" android:text="2"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+            <Button android:id="@+id/btn3" android:text="3"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+
+            <Button android:id="@+id/btn4" android:text="4"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+            <Button android:id="@+id/btn5" android:text="5"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+            <Button android:id="@+id/btn6" android:text="6"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+
+            <Button android:id="@+id/btn7" android:text="7"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+            <Button android:id="@+id/btn8" android:text="8"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+            <Button android:id="@+id/btn9" android:text="9"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+
+            <Button android:id="@+id/btnClear" android:text="CLR"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="18sp"/>
+            <Button android:id="@+id/btn0" android:text="0"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="22sp"/>
+            <Button android:id="@+id/btnEnter" android:text="OK"
+                android:layout_width="0dp" android:layout_height="0dp"
+                android:layout_columnWeight="1" android:layout_rowWeight="1"
+                android:layout_margin="3dp" android:textSize="18sp"/>
+        </GridLayout>
+    </LinearLayout>
+
+    <!-- RIGHT HALF: ip/port + status + slider + fire/reset -->
+    <LinearLayout
+        android:orientation="vertical"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:padding="4dp">
+
+        <!-- IP + Port row -->
+        <LinearLayout
+            android:orientation="horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp">
+
+            <LinearLayout
+                android:orientation="vertical"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="3"
+                android:paddingEnd="8dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="ROBOT IP"
+                    android:textSize="12sp"
+                    android:textColor="#666666"/>
+
+                <EditText
+                    android:id="@+id/ipAddressInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="192.168.144.100"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:textSize="16sp"
+                    android:padding="8dp"
+                    android:background="#EEEEEE"/>
+            </LinearLayout>
+
+            <LinearLayout
+                android:orientation="vertical"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Port"
+                    android:textSize="12sp"
+                    android:textColor="#666666"/>
+
+                <EditText
+                    android:id="@+id/portInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="5005"
+                    android:inputType="number"
+                    android:singleLine="true"
+                    android:textSize="16sp"
+                    android:padding="8dp"
+                    android:background="#EEEEEE"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Status -->
+        <TextView
+            android:id="@+id/statusDisplay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="IDLE — enter password"
+            android:textSize="16sp"
+            android:padding="8dp"
+            android:background="#FFEB3B"
+            android:gravity="center"/>
+
+        <!-- Slider area -->
+        <LinearLayout
+            android:orientation="vertical"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="2"
+            android:gravity="center"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="SLIDE TO ARM  →"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:textColor="#C62828"
+                android:gravity="center"
+                android:letterSpacing="0.1"
+                android:paddingBottom="16dp"/>
+
+            <SeekBar
+                android:id="@+id/armSlider"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:max="100"
+                android:progress="0"
+                android:enabled="false"
+                android:paddingStart="32dp"
+                android:paddingEnd="32dp"
+                android:minHeight="56dp"
+                android:maxHeight="56dp"
+                android:progressDrawable="@drawable/seekbar_track_progress"
+                android:thumb="@drawable/seekbar_thumb"
+                android:splitTrack="false"/>
+
+            <TextView
+                android:id="@+id/armTimeLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="ARM TIME: 500 ms"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#444444"
+                android:gravity="center"
+                android:paddingTop="16dp"/>
+
+            <SeekBar
+                android:id="@+id/armTimeSlider"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="4990"
+                android:progress="490"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"/>
+        </LinearLayout>
+
+        <!-- FIRE | RESET row -->
+        <LinearLayout
+            android:orientation="horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1.2">
+
+            <Button
+                android:id="@+id/btnFire"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:text="FIRE"
+                android:textColor="#FFFFFF"
+                android:background="#D32F2F"
+                android:layout_margin="4dp"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:enabled="false"/>
+
+            <Button
+                android:id="@+id/btnReset"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:text="RESET"
+                android:textColor="#FFFFFF"
+                android:background="#455A64"
+                android:layout_margin="4dp"
+                android:textSize="22sp"/>
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

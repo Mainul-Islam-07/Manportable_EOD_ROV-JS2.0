@@ -1,0 +1,50 @@
+# joint_limits.yaml allows the dynamics properties specified in the URDF to be overwritten or augmented as needed
+
+# Scaling factors for velocity and acceleration (0.0 to 1.0)
+# Start conservative, increase once verified on real hardware
+default_velocity_scaling_factor: 0.5
+default_acceleration_scaling_factor: 0.5
+
+# Specific joint properties
+# Rule of thumb: max_acceleration ≈ 2x max_velocity
+joint_limits:
+  turret_Joint:
+    has_velocity_limits: true
+    max_velocity: 1.57
+    has_acceleration_limits: true
+    max_acceleration: 3.14
+  shoulder_Joint:
+    has_velocity_limits: true
+    max_velocity: 1.05
+    has_acceleration_limits: true
+    max_acceleration: 2.10
+  elbow_Joint:
+    has_velocity_limits: true
+    max_velocity: 1.57
+    has_acceleration_limits: true
+    max_acceleration: 3.14
+  telescope_Joint:
+    has_velocity_limits: true
+    max_velocity: 0.1
+    has_acceleration_limits: true
+    max_acceleration: 0.2
+  wrist_pan_Joint:
+    has_velocity_limits: true
+    max_velocity: 2.09
+    has_acceleration_limits: true
+    max_acceleration: 4.18
+  wrist_roll_Joint:
+    has_velocity_limits: true
+    max_velocity: 3.14
+    has_acceleration_limits: true
+    max_acceleration: 6.28
+  front_flipper_Joint:
+    has_velocity_limits: true
+    max_velocity: 0.1
+    has_acceleration_limits: true
+    max_acceleration: 0.2
+  rear_flipper_Joint:
+    has_velocity_limits: true
+    max_velocity: 0.1
+    has_acceleration_limits: true
+    max_acceleration: 0.2

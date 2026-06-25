@@ -1,0 +1,25 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: part_assembly_for_urdf
+    relative_path: urdf/part_assembly_for_urdf.urdf
+  srdf:
+    relative_path: config/part_assembly_for_urdf.srdf
+  package_settings:
+    author_name: monirul
+    author_email: cybernetics.rnd@gmail.com
+    generated_timestamp: 1776600825
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity

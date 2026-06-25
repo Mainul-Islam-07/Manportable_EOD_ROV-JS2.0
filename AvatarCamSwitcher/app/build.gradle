@@ -1,0 +1,57 @@
+// ============================================================================
+//  App module build.gradle
+// ============================================================================
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.avatarrobot.camswitcher'
+    // Raised to 35 because transitive deps of rtsp-client-android (media3 1.9.3,
+    // camera-core 1.5.3) require compiling against API 35+. This is COMPILE-time
+    // only — it does NOT change which devices can install the app.
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.avatarrobot.camswitcher"
+        minSdk 24          // Android 7.0+ — Android 9 (API 28) is unaffected by the compileSdk bump
+        targetSdk 34       // left at 34: we don't need to opt into Android 15 runtime behavior
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                          'proguard-rules.pro'
+        }
+    }
+
+    // The rtsp-client-android library is compiled against Java 17 (see its
+    // jitpack.yml -> openjdk17). The consuming module MUST match, or the
+    // dependency will fail to link.
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    buildFeatures {
+        viewBinding false   // plain findViewById is used to keep the surface path lean
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    // ---- Low-latency, zero-buffer RTSP engine (JitPack) --------------------
+    // Pushes RTP straight into a hardware MediaCodec bound to a SurfaceView.
+    // No ExoPlayer, no libVLC, no jitter buffer.
+    implementation 'com.github.alexeyvasilyev:rtsp-client-android:5.6.4'
+}

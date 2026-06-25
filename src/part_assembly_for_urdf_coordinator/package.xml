@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>part_assembly_for_urdf_coordinator</name>
+  <version>1.0.0</version>
+  <description>
+    Coordinator node: bridges SBUS RC commands to MoveIt 2 motion planning
+    and trajectory execution for the 7-DOF hybrid robotic arm.
+  </description>
+  <maintainer email="cybernetics.rnd@gmail.com">monirul</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sbus_interfaces</exec_depend>
+  <exec_depend>moveit_msgs</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>moveit_kinematics</exec_depend>
+  <exec_depend>moveit_ros_move_group</exec_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

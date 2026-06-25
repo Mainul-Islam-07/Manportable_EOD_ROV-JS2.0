@@ -1,0 +1,19 @@
+# moveit_controllers.yaml — MoveIt controller interface configuration
+# Only the arm_controller is listed here. The flippers are passive joints
+# and are NOT controlled by MoveIt.
+
+moveit_simple_controller_manager:
+  controller_names:
+    - arm_controller
+
+  arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - turret_Joint
+      - shoulder_Joint
+      - elbow_Joint
+      - telescope_Joint
+      - wrist_pan_Joint
+      - wrist_roll_Joint

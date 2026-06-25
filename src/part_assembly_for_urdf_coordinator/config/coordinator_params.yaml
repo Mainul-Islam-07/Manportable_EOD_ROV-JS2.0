@@ -1,0 +1,171 @@
+# coordinator_params.yaml — Coordinator node configuration
+#
+# ALL parameter values live here.  The coordinator code declares parameters
+# without defaults — every value MUST be present in this file or the node
+# will fail to start.
+#
+# IMPORTANT: You MUST measure home_position after loading your URDF:
+#   ros2 run tf2_ros tf2_echo base_link wrist_pan_Link
+# Copy the Translation x, y, z values below.
+
+coordinator:
+  ros__parameters:
+
+    # --- Planning / MoveIt ------------------------------------------------
+    planning_group: "arm"
+    end_effector_link: "wrist_pan_Link"
+    planning_timeout: 1.0            # OMPL timeout (seconds)
+
+    # --- Goal filtering ---------------------------------------------------
+    goal_deadband: 0.005             # m — position change below this is suppressed
+    settle_velocity_threshold: 0.01  # rad/s — unused by current pipeline, reserved
+    settle_timeout: 5.0              # s — unused by current pipeline, reserved
+
+    # --- Rates ------------------------------------------------------------
+    monitoring_rate: 50.0            # Hz — unused by current pipeline, reserved
+    diagnostics_rate: 10.0           # Hz — /coordinator/diagnostics publish rate
+
+    # --- Topics -----------------------------------------------------------
+    sbus_topic: "/sbus/control"
+
+    # Firing mode trigger topic: publishes std_msgs/UInt8 (1 = enter, 0 = exit).
+    # Replaces the SBUS operation_mode FIRING trigger.
+    fire_mode_topic: "/fire_mode"
+
+    # joint_state_topic: "/joint_states"      # mock hardware
+    joint_state_topic: "/joint_states"         # real hardware bring-up
+
+    # --- Home position ----------------------------------------------------
+    # >>> THIS MUST BE THE wrist_pan_Link POSITION AT ALL-JOINTS-ZERO. <<<
+    # The closed-form IK targets wrist_pan_Link (the wrist center, where
+    # turret/shoulder/elbow position the wrist before wrist_pan/roll
+    # orient it).  If you put a wrist_roll_Link or gripper position
+    # here instead, the coordinator's start state will disagree with
+    # the URDF by the wrist offset and IK will throw delta failures on
+    # every joystick push from home.
+    #
+    # To re-measure for a different URDF:
+    #   ros2 run tf2_ros tf2_echo base_link wrist_pan_Link
+    # (with arm at all-joints-zero / home position)
+    # Use the Translation values from the output.
+    home_position: [0.000, -0.018, 0.393]
+
+    # --- Flipper control --------------------------------------------------
+    flipper_step: 0.005               # rad per tick
+    flipper_rate: 20.0               # Hz
+    # If true, every flipper accumulator update runs through MoveIt's
+    # /check_state_validity using the current arm joint state plus the
+    # proposed flipper positions.  On collision the accumulator is held
+    # at its last-valid value so the operator can back out.  Set false
+    # to disable (e.g. when MoveIt isn't running or for bench testing).
+    flipper_collision_check: true
+
+    # --- Arm position control ---------------------------------------------
+    arm_step: 0.001                  # metres per tick (2 cm/s at 20 Hz)
+    arm_tick_rate: 20.0              # Hz
+
+    # --- Pitch (end-effector tilt) ----------------------------------------
+    pitch_deadband: 0.05             # rad (~3°) orientation change triggers goal
+    pitch_step: 0.02                 # rad per tick (~23°/s at 20 Hz)
+    pitch_limit: 3.14                # max accumulated pitch ±π
+
+    # --- Roll (end-effector roll) -----------------------------------------
+    roll_deadband: 0.05              # rad (~3°) roll change triggers goal
+    roll_step: 0.02                  # rad per tick (~23°/s at 20 Hz)
+    roll_limit: 3.14                 # max accumulated roll ±π
+
+    # --- Telescope --------------------------------------------------------
+    telescope_step: 0.0005            # m per tick (4 cm/s at 20 Hz)
+    telescope_deadband: 0.0005       # 0.5 mm — telescope dispatch threshold
+
+    # --- Accumulation cap -------------------------------------------------
+    # Max ahead factor: limits how far any accumulated value can get
+    # ahead of the last successfully executed value.
+    # max_ahead = step × factor  (e.g. pitch: 0.02 × 3 = 0.06 rad ≈ 3.4°)
+    # Prevents overshoot — accumulation blocks until execution catches up.
+    max_ahead_factor: 1
+
+    # --- Physical-position caps (feedback-based) ---------------------------
+    # Max distance the accumulator may run ahead of the PHYSICAL joint
+    # position reported by /joint_states.  If the motor can't keep up,
+    # accumulation pauses until it catches up.  Prevents the commanded
+    # target from drifting arbitrarily far from the actual hardware.
+    #
+    # Telescope was already using a hardcoded 2 cm cap; now configurable.
+    # Flippers and roll are new — they were previously open-loop.
+    telescope_ahead_limit: 0.005     # metres (5 mm)
+    flipper_ahead_limit:   0.05      # rad (~2.9°)
+    roll_ahead_limit:      0.05      # rad (~2.9°)
+
+    # Hardware arrival tolerance: _last_valid only advances if the
+    # physical joint state is within this many radians of the PREVIOUS
+    # IK target.  Prevents the accumulator from drifting ahead of
+    # frozen or lagging motors.  Set generous enough for normal motor
+    # lag but strict enough to detect a stalled motor within 2-3 cycles.
+    goal_arrival_tolerance: 0.15     # rad (~8.6°)
+
+    # --- Safety -----------------------------------------------------------
+
+    # Max single-step joint change from current state.
+    # IK solutions with any joint jumping more than this are rejected.
+    # Prevents erratic arm reconfigurations.
+    max_joint_delta: 0.5             # rad (revolute) / m (prismatic)
+
+    # Watchdog: if no SBUS message arrives for this many seconds,
+    # cancel all motion and hold position.  Resumes when messages return.
+    watchdog_timeout: 2.0            # seconds
+
+    # Joint-state feedback watchdog: if no /joint_states message arrives
+    # for this many seconds, block all arm and flipper motion until
+    # feedback returns.  Protects against joint_state_broadcaster crash
+    # or hardware disconnect — without feedback, collision checks, delta
+    # checks, and physical-position caps all operate on stale data.
+    joint_state_timeout: 0.5         # seconds
+
+    # IK turret-scaling radius near the home-pose singularity (the wrist sits
+    # 18 mm from the base axis at home, so atan2(x,±y) is geometrically nasty
+    # in any small radius around home).  Below this radius the turret slew
+    # AND its diff to atan2_desired are scaled by r_xy/SCALE_R, so per-tick
+    # turret motion (and elbow swing) drops proportionally as r_xy -> 0.
+    #
+    # 0.150  default — peak turret on (0.022, ±0.08) Y sweep ~34°, ~19 cm swing
+    # 0.300  much tighter — peak ~23°, ~14 cm swing, but X tracks slower
+    #        in r<0.30 region (more wrist tracking error)
+    # 0.080  faster X tracking near home, but peak swing returns to ~49°
+    turret_scale_r: 0.150
+
+    # --- SBus joint-state passthrough -------------------------------------
+    # Echoes drive_{left,right} and claw_cmd from /sbus/control as a
+    # sensor_msgs/JointState on a dedicated topic.  Drives populate
+    # velocity[]; gripper populates effort[].  Position is always 0
+    # (these joints have no encoder feedback).  Set rate to 0 to disable
+    # the feature entirely.
+    sbus_joint_state_topic:         '/sbus/joint_states'
+    sbus_joint_state_rate:          50.0
+    # NOTE: the old sbus_joint_state_stale_timeout (60 s) has been removed.
+    # The 2-second SBUS watchdog now zeros the drive/claw passthrough
+    # variables directly, so the publisher reflects safe-stop state
+    # within 2 seconds of link loss instead of 60.
+    # Scale factors — defaults pass through the raw SBus values.
+    #   drive_left/right is signed % of drive_speed (see SbusControl.msg).
+    #   Set drive_velocity_scale = (max_rad_per_s / 100.0) for proper rad/s.
+    # Gripper claw_cmd is -100..+100.  Set gripper_effort_scale =
+    # (max_torque_Nm / 100.0) for proper Nm.
+    drive_velocity_scale:           1.0
+    gripper_effort_scale:           1.0
+
+    # --- Arm joint command stream -----------------------------------------
+    # Publishes the latest 6-arm-joint target positions as
+    # sensor_msgs/JointState on a dedicated topic.  Updated on every
+    # successful IK execution and held between updates.  Hardware
+    # subscribes to consume joint targets without using the JTC action
+    # interface.  Set rate to 0 to disable entirely.
+    arm_joint_commands_topic:  '/arm_joint_commands'
+    arm_joint_commands_rate:   50.0
+
+    # --- Flipper joint command stream -------------------------------------
+    # Symmetric counterpart for the 2 flipper joints.  Same semantics:
+    # held on stale, hardware runs its own staleness watchdog via
+    # header.stamp.  Set rate to 0 to disable.
+    flipper_joint_commands_topic: '/flipper_joint_commands'
+    flipper_joint_commands_rate:  50.0
