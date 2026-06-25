@@ -79,6 +79,11 @@ class MainActivity : AppCompatActivity() {
     // Persists while MAIN is selected; the surface is reset to 1x on other feeds.
     private var mainZoom = 1
 
+    // Last decoded frame size, used to letterbox the surface to the video's aspect
+    // ratio (see fitSurfaceToVideo). 0 until the first onRtspFrameSizeChanged.
+    private var videoW = 0
+    private var videoH = 0
+
     // ---- State engine -------------------------------------------------------
     private var currentFeed: CameraFeed = CameraFeed.MAIN
     private var pendingFeed: CameraFeed? = CameraFeed.MAIN
@@ -176,6 +181,9 @@ class MainActivity : AppCompatActivity() {
             override fun onRtspStatusDisconnected() = runOnUiThread {
                 if (switching || pendingFeed != null) beginPendingFeed()
             }
+            override fun onRtspFrameSizeChanged(width: Int, height: Int) = runOnUiThread {
+                fitSurfaceToVideo(width, height)
+            }
             override fun onRtspStatusFailed(message: String?) = runOnUiThread {
                 if (!surfaceReady) return@runOnUiThread
                 // Toast only once per outage so a long retry loop doesn't spam.
@@ -224,18 +232,15 @@ class MainActivity : AppCompatActivity() {
         showCover()
     }
 
-    // Main-pack charge chip (top-right). Mirrors the dashboard BatteryChip:
-    // green >=50, amber >=20, red below, grey when unknown (pct outside 0..100).
+    // Main-pack charge chip (top-right): white percentage on a grey pill, the pill
+    // turning red only when the charge drops under 15%. Unknown (no fresh reading)
+    // stays grey and shows "--".
     private fun updateBattery(pct: Int) {
         val known = pct in 0..100
-        val color = when {
-            !known    -> 0xFF9E9E9E.toInt()   // grey
-            pct >= 50 -> 0xFF2E7D32.toInt()   // green
-            pct >= 20 -> 0xFFF9A825.toInt()   // amber
-            else      -> 0xFFD32F2F.toInt()   // red
-        }
-        txtBattery.text = if (known) "● $pct%" else "● --"
-        txtBattery.setTextColor(color)
+        val low = known && pct < 15
+        txtBattery.text = if (known) "$pct%" else "--"
+        txtBattery.backgroundTintList = ColorStateList.valueOf(
+            if (low) 0xFFD32F2F.toInt() else 0xFF9E9E9E.toInt())
     }
 
     private fun wireButtons() {
@@ -329,6 +334,26 @@ class MainActivity : AppCompatActivity() {
         btnTalk.text = if (talking) "🎤 Talking" else "🔈 Listening"
         btnTalk.backgroundTintList = ColorStateList.valueOf(
             if (talking) Color.parseColor("#2E7D32") else Color.parseColor("#9E9E9E"))
+    }
+
+    // Size the surface to the video's aspect ratio (Fit/letterbox), centered. The
+    // RtspSurfaceView stretches its content to its bounds, so making the bounds match
+    // the frame's proportions is what removes the apparent zoom/distortion at 1x.
+    // Digital zoom (scaleX/scaleY) still acts on this resized view from its center.
+    private fun fitSurfaceToVideo(w: Int, h: Int) {
+        if (w <= 0 || h <= 0) return
+        videoW = w; videoH = h
+        val parent = rtspView.parent as? View ?: return
+        val pw = parent.width; val ph = parent.height
+        if (pw == 0 || ph == 0) {                 // not laid out yet — retry next frame
+            rtspView.post { fitSurfaceToVideo(w, h) }
+            return
+        }
+        val scale = minOf(pw / w.toFloat(), ph / h.toFloat())
+        val lp = rtspView.layoutParams
+        lp.width = (w * scale).toInt()
+        lp.height = (h * scale).toInt()
+        rtspView.layoutParams = lp                // all 4 constraints remain → centered
     }
 
     // Scales the video surface from its center. SurfaceView honors view-level

@@ -39,14 +39,15 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
         android:layout_marginEnd="12dp"
-        android:background="@drawable/txt_rec_bg"
+        android:background="@drawable/bg_battery_chip"
+        android:backgroundTint="#9E9E9E"
         android:paddingHorizontal="10dp"
         android:paddingVertical="4dp"
         android:fontFamily="monospace"
-        android:textColor="#9E9E9E"
+        android:textColor="#FFFFFFFF"
         android:textSize="12sp"
         android:textStyle="bold"
-        tools:text="● 85%"
+        tools:text="85%"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
