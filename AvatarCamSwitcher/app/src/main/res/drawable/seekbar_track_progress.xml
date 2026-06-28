@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Empty track (thick, rounded, light gray) -->
+    <item android:id="@android:id/background"
+        android:gravity="center_vertical|fill_horizontal">
+        <shape android:shape="rectangle">
+            <corners android:radius="32dp"/>
+            <solid android:color="#E8E8E8"/>
+            <stroke android:width="2dp" android:color="#BDBDBD"/>
+            <size android:height="56dp"/>
+        </shape>
+    </item>
+
+    <!-- Progress fill (red gradient) -->
+    <item android:id="@android:id/progress"
+        android:gravity="center_vertical|fill_horizontal">
+        <clip>
+            <shape android:shape="rectangle">
+                <corners android:radius="32dp"/>
+                <gradient
+                    android:type="linear"
+                    android:angle="0"
+                    android:startColor="#FF8A65"
+                    android:centerColor="#F44336"
+                    android:endColor="#B71C1C"/>
+            </shape>
+        </clip>
+    </item>
+
+</layer-list>

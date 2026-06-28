@@ -43,6 +43,13 @@ android {
     buildFeatures {
         viewBinding false   // plain findViewById is used to keep the surface path lean
     }
+
+    // The 3D digital-twin meshes (ported from JS2.0_Digital_Twin) must stay
+    // uncompressed so the binary STL parser can read them straight from assets.
+    androidResources {
+        noCompress 'stl'
+        noCompress 'STL'
+    }
 }
 
 dependencies {

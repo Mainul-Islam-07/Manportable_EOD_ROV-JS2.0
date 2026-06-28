@@ -32,18 +32,37 @@
         <item name="android:stateListAnimator">@null</item>
     </style>
 
-    <!-- Square gimbal pan/tilt key used in the right-side D-pad (MAIN only). -->
+    <!-- Square gimbal pan/tilt key used in the right-side D-pad (MAIN only).
+         Smaller than the original (28dp) to fit the repositioned HUD corner. -->
     <style name="GimbalButton">
-        <item name="android:layout_width">36dp</item>
-        <item name="android:layout_height">36dp</item>
+        <item name="android:layout_width">28dp</item>
+        <item name="android:layout_height">28dp</item>
         <item name="android:layout_margin">1dp</item>
         <item name="android:minWidth">0dp</item>
         <item name="android:minHeight">0dp</item>
         <item name="android:padding">0dp</item>
         <item name="android:textColor">#FFFFFFFF</item>
         <item name="android:textStyle">bold</item>
-        <item name="android:textSize">15sp</item>
+        <item name="android:textSize">12sp</item>
         <item name="android:background">@drawable/bg_gimbal_key</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <!-- Collapsed tap-to-expand dropdown button (CAMERA / ZOOM / SOUND) and the
+         FIRING/AIM and 3D toggle chips. The expanded list is built in code by
+         HudDropdown; this is just the resting chip. -->
+    <style name="HudChip">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minWidth">56dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:paddingHorizontal">10dp</item>
+        <item name="android:paddingVertical">5dp</item>
+        <item name="android:textColor">#FFFFFFFF</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:background">@drawable/bg_record_pill</item>
+        <item name="android:backgroundTint">#99000000</item>
         <item name="android:stateListAnimator">@null</item>
     </style>
 </resources>

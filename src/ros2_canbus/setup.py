@@ -38,7 +38,8 @@ setup(
             'fire = ros2_canbus.fire_server:main',
             'diagnostics = ros2_canbus.telemetry_udp_bridge:main',
             'beat = ros2_canbus.heartbeat_monitor_node:main',
-            'battery = ros2_canbus.battery_monitor:main'
+            'battery = ros2_canbus.battery_monitor:main',
+            'mode = ros2_canbus.sbus_mode_udp_bridge:main'
         ],
     },
 )

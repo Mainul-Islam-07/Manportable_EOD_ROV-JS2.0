@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Avatar HUD. Full-screen camera feed with a transparent 3D-twin overlay and a
+  control layer. Layout follows Final App.drawio.png:
+    top-left   : REC oval, SOUND dropdown, FIRING/AIM button
+    top-right  : battery chip, then the 3D FIGURE panel
+    bottom-left: CAMERA dropdown + ZOOM dropdown
+    bottom-right: gimbal D-pad (MAIN only) + 3D toggle
+-->
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -17,8 +25,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Black transition cover: masks the cross-feed/mosaic during a switch.
-         Sits above the surface but below the controls. Lifted on first frame. -->
+    <!-- Black transition cover: masks the cross-feed/mosaic during a switch. -->
     <View
         android:id="@+id/transition_cover"
         android:layout_width="0dp"
@@ -30,15 +37,26 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Main-pack battery charge (top-right). Always visible; shows a placeholder
-         until the first telemetry packet. Text + leading dot are colour-coded by
-         level in code. -->
+    <!-- 3D FIGURE panel (top-right). The transparent OrbitGLSurfaceView is added
+         into this container in code; it composites over the camera feed. -->
+    <FrameLayout
+        android:id="@+id/twin_container"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginTop="0dp"
+        android:layout_marginEnd="0dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintWidth_percent="0.42"
+        app:layout_constraintHeight_percent="0.5" />
+
+    <!-- Main-pack battery charge chip, directly under the REC button (top-left).
+         Independent of the 3D panel so toggling the figure never moves it. -->
     <TextView
         android:id="@+id/txt_battery"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:layout_marginEnd="12dp"
+        android:layout_marginTop="6dp"
         android:background="@drawable/bg_battery_chip"
         android:backgroundTint="#9E9E9E"
         android:paddingHorizontal="10dp"
@@ -47,33 +65,12 @@
         android:textColor="#FFFFFFFF"
         android:textSize="12sp"
         android:textStyle="bold"
-        tools:text="85%"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        tools:text="44%"
+        app:layout_constraintTop_toBottomOf="@id/btn_record"
+        app:layout_constraintStart_toStartOf="@id/btn_record" />
 
-    <!-- Recording timer indicator (top-right, under the battery chip). Hidden
-         unless recording. -->
-    <TextView
-        android:id="@+id/txt_rec"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:layout_marginEnd="12dp"
-        android:background="@drawable/txt_rec_bg"
-        android:paddingHorizontal="10dp"
-        android:paddingVertical="4dp"
-        android:fontFamily="monospace"
-        android:textColor="#FFFFFFFF"
-        android:textSize="11sp"
-        android:textStyle="bold"
-        android:visibility="gone"
-        tools:visibility="visible"
-        tools:text="● REC  00:12"
-        app:layout_constraintTop_toBottomOf="@id/txt_battery"
-        app:layout_constraintEnd_toEndOf="parent" />
-
-    <!-- Record toggle (top-left). Text flips between ● REC and ■ STOP; tint flips
-         red (recording) / grey (idle) in onRecordingStateChanged. -->
+    <!-- REC oval toggle (top-left). Grey = idle ("REC"), red = recording
+         ("REC MM:SS"); tint + text are driven in onRecordingStateChanged. -->
     <Button
         android:id="@+id/btn_record"
         android:layout_width="wrap_content"
@@ -81,65 +78,114 @@
         android:layout_margin="12dp"
         android:minWidth="0dp"
         android:minHeight="0dp"
-        android:paddingHorizontal="12dp"
+        android:paddingHorizontal="16dp"
         android:paddingVertical="6dp"
-        android:text="● Rec Off"
+        android:text="REC"
         android:textColor="#FFFFFFFF"
         android:textStyle="bold"
-        android:textSize="12sp"
+        android:textSize="13sp"
         android:background="@drawable/bg_record_pill"
         android:backgroundTint="#9E9E9E"
         android:stateListAnimator="@null"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
-    <!-- Push-to-talk (top-left, under REC). Always visible. Resting = listening
-         (incoming audio plays, mic off). Press/hold = talking (mic on, incoming
-         audio muted). Tint flips green (talking) / grey (listening) in code.
-         UDP to 192.168.144.10:5555. -->
+    <!-- SOUND dropdown (top-left, right of REC): LISTEN / TALK / OFF. -->
     <Button
-        android:id="@+id/btn_talk"
+        android:id="@+id/btn_sound"
+        style="@style/HudChip"
+        android:layout_marginStart="8dp"
+        android:textSize="13sp"
+        android:backgroundTint="#9E9E9E"
+        android:text="SOUND"
+        app:layout_constraintTop_toTopOf="@id/btn_record"
+        app:layout_constraintBottom_toBottomOf="@id/btn_record"
+        app:layout_constraintStart_toEndOf="@id/btn_record" />
+
+    <!-- FIRING / AIM button (top-center). Direct press → 60 s hidden countdown
+         (red) → AIM. Color/label/state driven in code. -->
+    <Button
+        android:id="@+id/btn_fire"
+        style="@style/HudChip"
+        android:layout_marginStart="24dp"
+        android:minWidth="120dp"
+        android:textSize="13sp"
+        android:text="FIRING"
+        android:backgroundTint="#9E9E9E"
+        app:layout_constraintTop_toTopOf="@id/btn_record"
+        app:layout_constraintBottom_toBottomOf="@id/btn_record"
+        app:layout_constraintStart_toEndOf="@id/btn_sound" />
+
+    <!-- SBUS mode (right of FIRING): DISARM/HOME/ARM/DRIVE from the Pi's
+         sbus_mode_udp_bridge on UDP :9871. Text + tint driven in code; "—" when
+         no feed. -->
+    <TextView
+        android:id="@+id/txt_mode"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
-        android:layout_marginTop="6dp"
-        android:minWidth="0dp"
-        android:minHeight="0dp"
-        android:paddingHorizontal="12dp"
-        android:paddingVertical="6dp"
-        android:text="🔈 Listening"
-        android:textColor="#FFFFFFFF"
-        android:textStyle="bold"
-        android:textSize="12sp"
+        android:layout_marginStart="10dp"
+        android:minWidth="64dp"
+        android:gravity="center"
         android:background="@drawable/bg_record_pill"
         android:backgroundTint="#9E9E9E"
-        android:stateListAnimator="@null"
-        app:layout_constraintTop_toBottomOf="@id/btn_record"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="6dp"
+        android:textColor="#FFFFFFFF"
+        android:textStyle="bold"
+        android:textSize="13sp"
+        android:text="—"
+        tools:text="DRIVE"
+        app:layout_constraintTop_toTopOf="@id/btn_record"
+        app:layout_constraintBottom_toBottomOf="@id/btn_record"
+        app:layout_constraintStart_toEndOf="@id/btn_fire" />
+
+    <!-- CAMERA dropdown (bottom-left): MAIN / FRONT / BACK / WRIST / GRIP.
+         Size + font match REC; grey background; bottom-aligned to the 3D button. -->
+    <Button
+        android:id="@+id/btn_camera"
+        style="@style/HudChip"
+        android:layout_marginStart="12dp"
+        android:minWidth="0dp"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="6dp"
+        android:textSize="13sp"
+        android:backgroundTint="#9E9E9E"
+        android:text="MAIN"
+        app:layout_constraintBottom_toBottomOf="@id/btn_3d"
         app:layout_constraintStart_toStartOf="parent" />
 
-    <!-- Left-side digital-zoom column, under the REC button (MAIN only).
-         Scales the video surface from its center (1x/2x/3x/4x). -->
-    <LinearLayout
-        android:id="@+id/zoom_bar"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:layout_marginStart="12dp"
-        android:layout_marginTop="16dp"
+    <!-- ZOOM dropdown (bottom-left, right of CAMERA): 4X / 3X / 2X / 1X.
+         Shown only on the MAIN feed. Matches REC / CAMERA. -->
+    <Button
+        android:id="@+id/btn_zoom"
+        style="@style/HudChip"
+        android:layout_marginStart="8dp"
+        android:minWidth="0dp"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="6dp"
+        android:textSize="13sp"
+        android:backgroundTint="#9E9E9E"
+        android:text="1X"
         android:visibility="gone"
         tools:visibility="visible"
-        app:layout_constraintTop_toBottomOf="@id/btn_talk"
-        app:layout_constraintStart_toStartOf="parent">
+        app:layout_constraintBottom_toBottomOf="@id/btn_3d"
+        app:layout_constraintStart_toEndOf="@id/btn_camera" />
 
-        <Button android:id="@+id/btn_zoom_1" style="@style/ZoomButton" android:text="1x" />
-        <Button android:id="@+id/btn_zoom_2" style="@style/ZoomButton" android:text="2x" />
-        <Button android:id="@+id/btn_zoom_3" style="@style/ZoomButton" android:text="3x" />
-        <Button android:id="@+id/btn_zoom_4" style="@style/ZoomButton" android:text="4x" />
-    </LinearLayout>
+    <!-- 3D overlay toggle (bottom-right corner). Size + font match REC. -->
+    <Button
+        android:id="@+id/btn_3d"
+        style="@style/HudChip"
+        android:layout_margin="12dp"
+        android:minWidth="0dp"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="6dp"
+        android:textSize="13sp"
+        android:text="3D"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Right-side SIYI gimbal pan/tilt D-pad (MAIN only). Hold an arrow to move,
-         release to stop; center key recenters. Commands go to the A8 mini at
+    <!-- SIYI gimbal pan/tilt D-pad (bottom-right, above the 3D toggle; MAIN only).
+         Hold an arrow to move, release to stop; center recenters. A8 mini at
          192.168.144.25:37260. -->
     <LinearLayout
         android:id="@+id/gimbal_panel"
@@ -148,10 +194,10 @@
         android:orientation="vertical"
         android:gravity="center"
         android:layout_marginEnd="12dp"
+        android:layout_marginBottom="8dp"
         android:visibility="gone"
         tools:visibility="visible"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toTopOf="@id/nav_bar"
+        app:layout_constraintBottom_toTopOf="@id/btn_3d"
         app:layout_constraintEnd_toEndOf="parent">
 
         <Button android:id="@+id/btn_tilt_up" style="@style/GimbalButton" android:text="▲" />
@@ -167,25 +213,5 @@
         </LinearLayout>
 
         <Button android:id="@+id/btn_tilt_down" style="@style/GimbalButton" android:text="▼" />
-    </LinearLayout>
-
-    <!-- Bottom navigation overlay bar: 5 equal-weight feed buttons. -->
-    <LinearLayout
-        android:id="@+id/nav_bar"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:padding="6dp"
-        android:background="#99000000"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
-
-        <Button android:id="@+id/btn_front" style="@style/CamButton" android:text="FRONT" />
-        <Button android:id="@+id/btn_back"  style="@style/CamButton" android:text="BACK" />
-        <Button android:id="@+id/btn_wrist" style="@style/CamButton" android:text="WRIST" />
-        <Button android:id="@+id/btn_grip"  style="@style/CamButton" android:text="GRIP" />
-        <Button android:id="@+id/btn_main"  style="@style/CamButton" android:text="MAIN" />
     </LinearLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>

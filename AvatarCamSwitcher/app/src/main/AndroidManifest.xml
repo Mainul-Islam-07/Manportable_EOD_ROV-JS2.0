@@ -41,6 +41,14 @@
             </intent-filter>
         </activity>
 
+        <!-- AIM / fire-control window (ported from ARMSWITCH), reached from the
+             HUD's FIRING→AIM button. -->
+        <activity
+            android:name=".ArmFireActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden" />
+
         <service
             android:name=".ScreenRecordService"
             android:exported="false"
