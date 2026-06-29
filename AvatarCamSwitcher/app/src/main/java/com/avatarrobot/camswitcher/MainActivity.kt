@@ -666,7 +666,7 @@ class MainActivity : AppCompatActivity() {
         private const val LOW_LATENCY_SPS_REWRITE = false
         private const val START_TIMEOUT_MS = 800L
         private const val RETRY_DELAY_MS = 1500L
-        private const val FIRE_COUNTDOWN_MS = 60_000L
+        private const val FIRE_COUNTDOWN_MS = 15_000L
         // SBUS mode feed is ~5 Hz (200 ms); ~12 missed packets → show "—".
         private const val MODE_STALE_MS = 2500L
     }

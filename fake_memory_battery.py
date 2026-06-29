@@ -102,7 +102,7 @@ def main(argv=None):
     mode = (f"drain {args.drain_from}->{args.drain_to} mV over {args.drain_secs}s"
             if drain else f"steady BAT1={args.bat1} BAT2={args.bat2} mV")
     print(f"fake_memory_battery -> {args.host}:{args.port}  "
-          f"({mode}, every {args.interval}s, threshold 3300 mV)  Ctrl-C to stop",
+          f"({mode}, every {args.interval}s, threshold 3000 mV)  Ctrl-C to stop",
           flush=True)
 
     t0 = time.monotonic()
@@ -121,8 +121,8 @@ def main(argv=None):
             except OSError as e:
                 print(f"send failed: {e}", file=sys.stderr, flush=True)
 
-            d_ok = "OK" if bat1_mv >= 3300 else "LOW"
-            a_ok = "OK" if bat2_mv >= 3300 else "LOW"
+            d_ok = "OK" if bat1_mv >= 3000 else "LOW"
+            a_ok = "OK" if bat2_mv >= 3000 else "LOW"
             print(f"sent  BAT1(drive)={bat1_mv} mV [{d_ok}]  "
                   f"BAT2(arm)={bat2_mv} mV [{a_ok}]", flush=True)
 

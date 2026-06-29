@@ -195,7 +195,7 @@ class ScreenRecordService : Service() {
         else @Suppress("DEPRECATION") Notification.Builder(this))
             .setContentTitle("JS2.0")
             .setContentText("Recording screen…")
-            .setSmallIcon(R.drawable.ic_launcher)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .build()
 

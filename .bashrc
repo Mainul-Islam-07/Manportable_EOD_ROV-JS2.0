@@ -111,13 +111,22 @@ alias light='ros2 run ros2_canbus light'
 alias fire='ros2 run ros2_canbus fire'
 alias diagnostics='ros2 run ros2_canbus diagnostics'
 alias beat='ros2 run ros2_canbus beat'
+alias battery='ros2 run ros2_canbus battery'
+alias mode='ros2 run ros2_canbus mode'
 alias restart='sudo systemctl restart robot-startup.service'
 alias enable='sudo systemctl enable robot-startup.service'
 alias disable='sudo systemctl disable robot-startup.service'
 alias start='sudo systemctl start robot-startup.service'
 alias stop='sudo systemctl stop robot-startup.service'
+alias status='sudo systemctl status robot-startup.service'
 alias journal='journalctl -u robot-startup.service -f'
 alias feedback='tail -f ~/robot_startup_logs/*.log'
+alias bash="sudo nano ~/.bashrc"
+alias bye="sudo shutdown now"
+
+siyi() {
+    ffplay -fflags nobuffer -flags low_delay -framedrop "${@:2}" "rtsp://192.168.144.${1:-65}:8554/main.264"
+}
 # Alias definitions.
 # You may want to put all your additions into a separate file like
 # ~/.bash_aliases, instead of adding them here directly.
