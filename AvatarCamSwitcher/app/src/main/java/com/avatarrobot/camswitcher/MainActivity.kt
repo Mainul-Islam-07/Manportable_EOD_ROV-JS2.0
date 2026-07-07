@@ -57,9 +57,6 @@ class MainActivity : AppCompatActivity() {
         MAIN ("MAIN",  "rtsp://192.168.144.25:8554/main.264", 0)
     }
 
-    /** Three-state intercom selector. */
-    private enum class SoundState { OFF, LISTEN, TALK }
-
     /** FIRING/AIM button lifecycle. */
     private enum class FireUi { IDLE, COUNTING, AIM }
 
@@ -71,10 +68,10 @@ class MainActivity : AppCompatActivity() {
     // Dropdowns
     private lateinit var btnCamera: Button
     private lateinit var btnZoom: Button
-    private lateinit var btnSound: Button
+    private lateinit var btnSound: Button       // master intercom on/off
+    private lateinit var btnTalk: Button         // hold-to-talk (momentary)
     private lateinit var cameraDropdown: HudDropdown<CameraFeed>
     private lateinit var zoomDropdown: HudDropdown<Int>
-    private lateinit var soundDropdown: HudDropdown<SoundState>
 
     // Fire control
     private lateinit var btnFire: Button
@@ -109,7 +106,11 @@ class MainActivity : AppCompatActivity() {
 
     // Two-way intercom over UDP with the rover host (192.168.144.100:5555).
     private val audioLink by lazy { AudioLinkController(applicationContext) }
-    private var soundState = SoundState.OFF
+    // Master intercom on/off, plus momentary hold-to-talk. Half-duplex: when
+    // sound is on, releasing TALK = LISTEN (Pi mic -> here), holding = TALK
+    // (mic -> Pi speaker).
+    private var soundOn = false
+    private var talking = false
 
     // Digital zoom for the MAIN feed only (1x..4x), persisted while MAIN is active.
     private var mainZoom = 1
@@ -160,16 +161,17 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission()
     ) { /* legacy DCIM save fails silently if denied */ }
 
-    // Mic capture needs RECORD_AUDIO. Requested when TALK is first chosen; if
-    // granted we switch to talking, otherwise we fall back to OFF.
+    // Mic capture needs RECORD_AUDIO. Requested when the master is switched on so
+    // hold-to-talk works immediately; LISTEN works regardless. If denied, sound
+    // stays on for LISTEN only and holding TALK simply won't capture.
     private val micPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) applySound(SoundState.TALK)
-        else {
-            Toast.makeText(this, "Microphone permission denied", Toast.LENGTH_SHORT).show()
-            applySound(SoundState.OFF)
+        if (!granted) {
+            Toast.makeText(this, "Microphone permission denied — TALK disabled",
+                Toast.LENGTH_SHORT).show()
         }
+        applyAudio()
     }
 
     // AIM window result: RESULT_OK means RESET was pressed (rover disarmed) → reset
@@ -193,6 +195,7 @@ class MainActivity : AppCompatActivity() {
         btnCamera     = findViewById(R.id.btn_camera)
         btnZoom       = findViewById(R.id.btn_zoom)
         btnSound      = findViewById(R.id.btn_sound)
+        btnTalk       = findViewById(R.id.btn_talk)
         btnFire       = findViewById(R.id.btn_fire)
         txtMode       = findViewById(R.id.txt_mode)
         gimbalPanel   = findViewById(R.id.gimbal_panel)
@@ -266,11 +269,14 @@ class MainActivity : AppCompatActivity() {
         ScreenRecordService.onStateChange = { active -> runOnUiThread { onRecordingStateChanged(active) } }
 
         setupDropdowns()
-        // If the mic can't open (device error), fall back to OFF.
+        // If the mic can't open (device error), drop back to LISTEN (keep sound on).
         audioLink.onMicFailed = {
-            applySound(SoundState.OFF)
+            talking = false
+            applyAudio()
             Toast.makeText(this, "Couldn't start microphone", Toast.LENGTH_SHORT).show()
         }
+        btnSound.setOnClickListener { toggleSound() }
+        wireTalkButton()
         wireGimbalButtons()
         btnRecord.setOnClickListener { toggleRecording() }
         btnFire.setOnClickListener { onFirePressed() }
@@ -308,15 +314,6 @@ class MainActivity : AppCompatActivity() {
             dropUp = true,
         ) { factor -> applyZoom(factor) }
         zoomDropdown.setCurrent(mainZoom)
-
-        // SOUND sits at the top, so it drops DOWN (default). At rest (OFF) the
-        // collapsed chip reads "SOUND"; LISTEN/TALK show their own label.
-        soundDropdown = HudDropdown(
-            btnSound,
-            listOf(SoundState.LISTEN to "LISTEN", SoundState.TALK to "TALK", SoundState.OFF to "OFF"),
-            collapsedLabel = { state, label -> if (state == SoundState.OFF) "SOUND" else label },
-        ) { state -> requestSound(state) }
-        soundDropdown.setCurrent(soundState)
     }
 
     // Battery chip (grey pill; red under 15%; "--" when unknown).
@@ -328,34 +325,63 @@ class MainActivity : AppCompatActivity() {
             if (low) 0xFFD32F2F.toInt() else 0xFF9E9E9E.toInt())
     }
 
-    // -- Sound (LISTEN / TALK / OFF) ------------------------------------------
-    // TALK needs RECORD_AUDIO; if not yet granted, request it and apply on grant.
-    private fun requestSound(state: SoundState) {
-        if (state == SoundState.TALK &&
+    // -- Sound: master on/off + momentary hold-to-talk (half-duplex) ----------
+
+    // Master button: toggles the whole intercom. Turning on requests RECORD_AUDIO
+    // up front (so holding TALK works at once); LISTEN works either way.
+    private fun toggleSound() {
+        soundOn = !soundOn
+        if (soundOn &&
             checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
             != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             micPermLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-            return
+            return                    // applyAudio() runs from the permission callback
         }
-        applySound(state)
+        applyAudio()
     }
 
-    private fun applySound(state: SoundState) {
-        soundState = state
-        soundDropdown.setCurrent(state)
-        when (state) {
-            SoundState.OFF -> {
-                audioLink.setMicEnabled(false)
-                audioLink.setSpeakerEnabled(false)
+    // Hold-to-talk: press and hold = TALK, release = back to LISTEN. Same
+    // ACTION_DOWN/UP pattern as the gimbal D-pad (holdToMove).
+    @SuppressLint("ClickableViewAccessibility")
+    private fun wireTalkButton() {
+        btnTalk.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (soundOn) { v.isPressed = true; talking = true; applyAudio() }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.isPressed = false; talking = false; applyAudio(); true
+                }
+                else -> false
             }
-            SoundState.LISTEN -> {
-                audioLink.setSpeakerEnabled(true)
-                audioLink.setMicEnabled(false)
-            }
-            SoundState.TALK -> {
-                audioLink.setMicEnabled(true)
-                audioLink.setSpeakerEnabled(false)
-            }
+        }
+    }
+
+    // Single place that enforces half-duplex from (soundOn, talking):
+    //   off        -> mic off + speaker off
+    //   on + hold  -> mic on  + speaker off   (TALK: mic -> Pi speaker)
+    //   on + !hold -> speaker on + mic off    (LISTEN: Pi mic -> here)
+    private fun applyAudio() {
+        btnTalk.visibility = if (soundOn) View.VISIBLE else View.GONE
+        btnSound.text = if (soundOn) "SOUND ON" else "SOUND"
+        btnSound.backgroundTintList = ColorStateList.valueOf(
+            if (soundOn) Color.parseColor("#2E7D32") else Color.parseColor("#9E9E9E"))
+
+        if (!soundOn) {
+            talking = false
+            audioLink.setMicEnabled(false)
+            audioLink.setSpeakerEnabled(false)
+            return
+        }
+        btnTalk.backgroundTintList = ColorStateList.valueOf(
+            if (talking) Color.parseColor("#D32F2F") else Color.parseColor("#9E9E9E"))
+        if (talking) {
+            audioLink.setMicEnabled(true)
+            audioLink.setSpeakerEnabled(false)
+        } else {
+            audioLink.setSpeakerEnabled(true)
+            audioLink.setMicEnabled(false)
         }
     }
 
@@ -617,8 +643,9 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         onRecordingStateChanged(ScreenRecordService.isRecording)
-        // Re-apply the chosen intercom state (default OFF on first launch).
-        applySound(soundState)
+        // Re-apply the intercom (default off on first launch). Never resume held.
+        talking = false
+        applyAudio()
         // ONE socket on :9870 for battery + twin joints; released in onPause.
         telemetryReceiver.start()
         // SBUS mode feed on :9871 (separate port); also released in onPause.
@@ -645,7 +672,8 @@ class MainActivity : AppCompatActivity() {
         sbusReceiver.stop()
         mainHandler.removeCallbacks(modeStaleRunnable)
         gimbal.stopMove()
-        // Drop mic/speaker in the background; the chosen state is re-applied in onResume.
+        // Drop mic/speaker in the background; state is re-applied in onResume.
+        talking = false
         audioLink.setMicEnabled(false)
         audioLink.setSpeakerEnabled(false)
         showCover()

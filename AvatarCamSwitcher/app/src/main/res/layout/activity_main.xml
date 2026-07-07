@@ -90,7 +90,8 @@
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
-    <!-- SOUND dropdown (top-left, right of REC): LISTEN / TALK / OFF. -->
+    <!-- SOUND master on/off (top-left, right of REC). Grey "SOUND" = off,
+         green "SOUND ON" = on. When on, the hold-to-talk button appears bottom-left. -->
     <Button
         android:id="@+id/btn_sound"
         style="@style/HudChip"
@@ -170,6 +171,25 @@
         tools:visibility="visible"
         app:layout_constraintBottom_toBottomOf="@id/btn_3d"
         app:layout_constraintStart_toEndOf="@id/btn_camera" />
+
+    <!-- Hold-to-talk (bottom-left, above CAMERA). Press and hold = TALK
+         (mic -> Pi speaker); release = back to LISTEN. Red while held. Shown
+         only while sound is on (toggled in code). -->
+    <Button
+        android:id="@+id/btn_talk"
+        style="@style/HudChip"
+        android:layout_marginStart="12dp"
+        android:layout_marginBottom="8dp"
+        android:minWidth="0dp"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="6dp"
+        android:textSize="13sp"
+        android:backgroundTint="#9E9E9E"
+        android:text="TALK"
+        android:visibility="gone"
+        tools:visibility="visible"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/btn_camera" />
 
     <!-- 3D overlay toggle (bottom-right corner). Size + font match REC. -->
     <Button
