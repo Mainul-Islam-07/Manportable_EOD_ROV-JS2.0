@@ -291,7 +291,11 @@ class ChannelInterpreter:
         # same physical axis whether in DRIVE or ARM mode.
         if mode == _MODE_DRIVE:
             fwd   = -raw[3] * drive_speed       # CH3: down=fwd, up=rev (polarity reversed)
-            turn  = raw[4] * (drive_speed / 5)  # CH4: left=left, right=right
+            turn  = raw[4] * (drive_speed / 2)  # CH4: left=left, right=right
+
+            if fwd < 0:
+                turn = - turn
+
             drive_left  = float(fwd + turn)
             drive_right = float(fwd - turn)
         else:
@@ -530,7 +534,7 @@ class SbusPublisher(Node):
         ch = decoded['channels']
         self._debug_count += 1
         if self._debug_count % 50 == 0:
-            self.get_logger().info(
+            self.get_logger().debug(
                 f"CH1={ch[0]:4d} CH2={ch[1]:4d} CH3={ch[2]:4d} CH4={ch[3]:4d} "
                 f"CH5={ch[4]:4d} CH6={ch[5]:4d} CH7={ch[6]:4d} CH8={ch[7]:4d} "
                 f"CH9={ch[8]:4d} CH10={ch[9]:4d} CH11={ch[10]:4d} CH12={ch[11]:4d} "

@@ -107,7 +107,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    // Two-way intercom over UDP with the rover host (192.168.144.10:5555).
+    // Two-way intercom over UDP with the rover host (192.168.144.100:5555).
     private val audioLink by lazy { AudioLinkController(applicationContext) }
     private var soundState = SoundState.OFF
 

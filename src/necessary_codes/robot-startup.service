@@ -10,7 +10,7 @@ User=jontro_soinik_2_0-2
 Environment=HOME=/home/jontro_soinik_2_0-2
 WorkingDirectory=/home/jontro_soinik_2_0-2
 
-ExecStart=/home/jontro_soinik_2_0-2/robot_startup.sh
+ExecStart=/home/jontro_soinik_2_0-2/ros2_ws/src/necessary_codes/robot_startup.sh
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=robot-startup

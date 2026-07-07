@@ -23,7 +23,6 @@ SEQUENCE = [
     ("sim_headless", "ros2 launch part_assembly_for_urdf_moveit_config demo.launch.py use_rviz:=false"),
     ("sbus",         "ros2 run sbus_driver sbus_publisher"),
     ("robot",        "ros2 run ros2_canbus robot"),
-    ("battery",      "ros2 run ros2_canbus battery"),
     ("light",        "ros2 run ros2_canbus light"),
     ("fire",         "ros2 run ros2_canbus fire"),
     ("mode",         "ros2 run ros2_canbus mode"),

@@ -1,0 +1,27 @@
+cat /proc/asound/card2/stream0
+Clip-on USB microphone UM02 at usb-xhci-hcd.1-2.2, full speed : USB Audio
+
+Capture:
+  Status: Stop
+  Interface 2
+    Altset 1
+    Format: S16_LE
+    Channels: 1
+    Endpoint: 0x86 (6 IN) (NONE)
+    Rates: 44100, 48000
+    Bits: 16
+    Channel map: MONO
+
+cat /proc/asound/card3/stream0
+Jieli Technology UACDemoV1.0 at usb-xhci-hcd.1-2.3, full speed : USB Audio
+
+Playback:
+  Status: Stop
+  Interface 1
+    Altset 1
+    Format: S16_LE
+    Channels: 2
+    Endpoint: 0x03 (3 OUT) (ADAPTIVE)
+    Rates: 48000
+    Bits: 16
+    Channel map: FL FR

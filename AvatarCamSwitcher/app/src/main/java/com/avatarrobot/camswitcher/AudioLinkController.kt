@@ -22,7 +22,7 @@ import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 
 /**
- * Full-duplex voice intercom over UDP with the rover host at 192.168.144.10:5555.
+ * Full-duplex voice intercom over UDP with the rover host at 192.168.144.100:5555.
  *
  * This is the Android port of the operator-station Python script (sounddevice +
  * UDP). One [DatagramSocket] bound to :5555 is shared for both directions, just
@@ -413,7 +413,7 @@ class AudioLinkController(context: Context) {
 
     companion object {
         // Must match the Python script (PEER_IP / PORT / RATE / FRAME_SIZE).
-        private const val HOST = "192.168.144.10"
+        private const val HOST = "192.168.144.100"
         private const val PORT = 5555
         private const val RATE = 16000
         private const val FRAME_BYTES = 512          // 256 samples * 2 bytes (int16, mono)
