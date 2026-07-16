@@ -1,0 +1,200 @@
+==============================================================================
+ Fresh Pi 5 -> part_assembly_for_urdf arm stack
+ Ubuntu 24.04 arm64 + ROS 2 Jazzy.  Run section by section. Do NOT paste blind.
+ Lines marked [CHECK] produce output you must read before continuing.
+
+ Scope: part_assembly_for_urdf, _moveit_config, _coordinator, plus
+        sbus_interfaces + sbus_driver (the coordinator imports SbusControl,
+        so it cannot build without them).
+        CAN / motors / lights / fire / audio are NOT covered here.
+
+ Why Ubuntu 24.04 + Jazzy: matches .bashrc:152 (source /opt/ros/jazzy/setup.bash)
+        and it is the only option with prebuilt arm64 MoveIt binaries. Raspberry
+        Pi OS Bookworm -- which fire_server.py's header claims -- has no Jazzy
+        binaries and would need a source build.
+==============================================================================
+
+
+# --- 0. Base system ----------------------------------------------------------
+sudo apt update && sudo apt upgrade -y
+sudo add-apt-repository universe -y
+sudo apt install -y curl gnupg lsb-release software-properties-common git
+
+
+# --- 1. ROS 2 Jazzy apt source ----------------------------------------------
+# The old apt-key/ros-archive-keyring method is dead (key rotated in 2025).
+# If this fails, follow https://docs.ros.org/en/jazzy/Installation.html instead.
+export ROS_APT_SOURCE_VERSION=$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F "tag_name" | awk -F\" '{print $4}')
+curl -L -o /tmp/ros2-apt-source.deb "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.$(. /etc/os-release && echo $UBUNTU_CODENAME)_all.deb"
+sudo apt install -y /tmp/ros2-apt-source.deb
+sudo apt update
+
+
+# --- 2. ROS 2 + build tools --------------------------------------------------
+# desktop, NOT ros-base: rviz2 + rviz_default_plugins are exec deps of all 3 packages.
+sudo apt install -y ros-jazzy-desktop
+sudo apt install -y ros-dev-tools python3-colcon-common-extensions python3-rosdep python3-vcstool
+
+
+# --- 3. MoveIt + ros2_control ------------------------------------------------
+sudo apt install -y \
+  ros-jazzy-moveit \
+  ros-jazzy-ros2-control \
+  ros-jazzy-ros2-controllers \
+  ros-jazzy-joint-trajectory-controller \
+  ros-jazzy-joint-state-broadcaster \
+  ros-jazzy-xacro
+# ros2-control      -> mock_components/GenericSystem (ros2_control.xacro:9)
+# ros2-controllers  -> joint_trajectory_controller  (ros2_controllers.yaml:12,18)
+
+
+# --- 4. Python deps (undeclared in the manifests) ----------------------------
+sudo apt install -y python3-numpy python3-serial
+# numpy  -> coordinator fk.py:9
+# serial -> sbus_driver/sbus_publisher.py:65
+
+
+# --- 5. [CHECK] trac_ik: DECISION POINT, do not skip -------------------------
+# kinematics.yaml:2 wants trac_ik_kinematics_plugin. It was released for Humble;
+# Jazzy/arm64 availability is NOT confirmed. Check before assuming:
+apt-cache policy ros-jazzy-trac-ik-kinematics-plugin
+
+#  (a) If a Candidate version is listed:
+sudo apt install -y ros-jazzy-trac-ik-kinematics-plugin
+
+#  (b) If "Candidate: (none)" -> build from source into the workspace:
+#      mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
+#      git clone -b rolling https://bitbucket.org/traclabs/trac_ik.git
+#      (then it builds with the rest in section 9)
+#
+#  (c) Or fall back to KDL -- BEHAVIOUR CHANGE, test the arm afterwards.
+#      kinematics.yaml lines 6-7 set position_only_ik:True and solve_type:Distance;
+#      both are TRAC-IK options KDL silently ignores, so IK solutions WILL differ.
+#      sed -i 's|trac_ik_kinematics_plugin/TRAC_IKKinematicsPlugin|kdl_kinematics_plugin/KDLKinematicsPlugin|' \
+#        ~/ros2_ws/src/part_assembly_for_urdf_moveit_config/config/kinematics.yaml
+
+
+# --- 6. rosdep ---------------------------------------------------------------
+sudo rosdep init          # harmless "already exists" error if re-run
+rosdep update
+
+
+# --- 7. Get the code ---------------------------------------------------------
+mkdir -p ~/ros2_ws/src && cd ~/ros2_ws
+# copy/clone the repo so packages land at ~/ros2_ws/src/<package>
+
+
+# --- 8. Fix the two manifest bugs -------------------------------------------
+# Both of these make a fresh Pi fail AFTER a clean rosdep install:
+#   1. ros2_controllers.yaml:12,18 uses joint_trajectory_controller/JointTrajectoryController
+#      for arm_controller and flipper_controller, but package.xml:31 has that dep
+#      COMMENTED OUT (stale "prevents installing gazebo" note -- JTC does not pull in Gazebo).
+#   2. kinematics.yaml:2 needs trac_ik_kinematics_plugin; package.xml declares only
+#      moveit_kinematics.
+cd ~/ros2_ws/src/part_assembly_for_urdf_moveit_config
+cp package.xml package.xml.bak
+
+# 8a. uncomment joint_trajectory_controller (currently disabled at line 31)
+sed -i 's|<!-- <exec_depend>joint_trajectory_controller</exec_depend> -->|<exec_depend>joint_trajectory_controller</exec_depend>|' package.xml
+
+# 8b. declare trac_ik  -- SKIP THIS LINE if you chose the KDL fallback in 5(c)
+sed -i 's|<exec_depend>moveit_kinematics</exec_depend>|<exec_depend>moveit_kinematics</exec_depend>\n  <exec_depend>trac_ik_kinematics_plugin</exec_depend>|' package.xml
+
+# [CHECK] confirm both landed:
+grep -nE "joint_trajectory_controller|trac_ik" package.xml
+
+# 8c. warehouse_ros_mongo (package.xml:45) may not resolve on Jazzy/arm64.
+#     Only warehouse_db.launch.py needs it. If rosdep in section 9 fails on it:
+#     sed -i '/warehouse_ros_mongo/d' package.xml
+
+
+# --- 9. Build (order matters) ------------------------------------------------
+cd ~/ros2_ws
+source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src --ignore-src -r -y      # [CHECK] must pass clean
+
+# sbus_interfaces FIRST: it generates SbusControl, which the coordinator
+# imports at module load. A single flat build can race and fail here.
+colcon build --packages-select sbus_interfaces
+source install/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+
+
+# --- 10. Shell setup ---------------------------------------------------------
+echo "source /opt/ros/jazzy/setup.bash"      >> ~/.bashrc
+echo "source ~/ros2_ws/install/setup.bash"   >> ~/.bashrc
+
+
+==============================================================================
+ CONFIGURE   (skip 11 and 12 for a bench build with no peripherals attached)
+==============================================================================
+
+# --- 11. UART for SBUS -- THE BIGGEST GAP, nothing in the repo does this ------
+# sbus_publisher.py:68 opens /dev/ttyAMA0 @100000 baud 8E2 (lines 400-407).
+# A fresh Pi 5 has NO usable /dev/ttyAMA0 until all four steps below are done.
+sudo sh -c 'printf "\nenable_uart=1\ndtoverlay=disable-bt\n" >> /boot/firmware/config.txt'
+sudo systemctl disable --now serial-getty@ttyAMA0.service
+sudo usermod -aG dialout $USER
+sudo reboot          # required: config.txt + group membership both need it
+# [CHECK] after reboot:  ls -l /dev/ttyAMA0   &&   groups | grep dialout
+# NOTE: SBUS is inverted -- an external inverter or the SIYI receiver must feed it.
+
+
+# --- 12. Static IP -----------------------------------------------------------
+# The Android app hardcodes the Pi at 192.168.144.100, so the Pi MUST match.
+# No netplan config is committed. Edit /etc/netplan/*.yaml, then:
+#   sudo netplan apply
+# [CHECK] ip -4 addr show | grep 192.168.144.100
+
+
+# --- 13. ROS_DOMAIN_ID -------------------------------------------------------
+# Nothing pins this anywhere -> default domain 0 + multicast discovery on ALL
+# interfaces, on a subnet shared with the tablet and 5 cameras. Pin it:
+echo "export ROS_DOMAIN_ID=42" >> ~/.bashrc     # any 0-101, same value on every host
+
+
+==============================================================================
+ VERIFY   (staged, so a missing SBUS receiver can't mask a MoveIt problem)
+==============================================================================
+
+# 14a. IK + RViz. THIS IS THE trac_ik TEST.
+ros2 launch part_assembly_for_urdf_moveit_config demo.launch.py
+#      -> RViz shows the arm; drag the marker, hit Plan.
+#      -> if the solver failed to load, move_group's log says so and Plan fails.
+
+# 14b. Controllers. THIS IS THE joint_trajectory_controller TEST -- the exact
+#      thing that fails today. Both must read "active".
+ros2 control list_controllers
+
+# 14c. Coordinator alone (no CAN, no motors needed):
+ros2 launch part_assembly_for_urdf_coordinator coordinator.launch.py
+ros2 topic info /sbus_control
+
+# 14d. With an SBUS receiver attached -- values move with the sticks:
+ros2 run sbus_driver sbus_publisher
+ros2 topic echo /sbus_control
+
+# 14e. Full stack:
+ros2 launch ros2_canbus bringup_sequence.launch.py
+
+# 14f. Offline unit tests (no ROS, no hardware):
+python3 -m pytest ~/ros2_ws/src/part_assembly_for_urdf_coordinator/part_assembly_for_urdf_coordinator/test/test_arm_ik.py
+
+
+==============================================================================
+ KNOW THIS BEFORE YOU EXPECT THE ARM TO MOVE
+==============================================================================
+ part_assembly_for_urdf.ros2_control.xacro:8-9 says outright:
+   "By default, set up controllers for simulation. This won't work on real hardware"
+   <plugin>mock_components/GenericSystem</plugin>
+
+ MoveIt plans against a MOCK arm; ros2_canbus drives the real motors over CAN on a
+ separate path. Confirm that split is intentional before deploying.
+
+ Not covered here (CAN stack, out of scope): the username jontro_soinik_2_0-2 is
+ hardcoded in robot-startup.service:10,11,13, controller_config.json:2,
+ Network_Lib.py:18 and Load_Settings_Lib.py:16. Those read config from the SOURCE
+ tree, so ~/ros2_ws/src/ must exist at that exact path even on a deployed Pi.
+ The arm stack itself is username-clean -- any username works for 14a-14d.
+==============================================================================

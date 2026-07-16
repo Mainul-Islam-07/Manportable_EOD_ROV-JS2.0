@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.net.TrafficStats
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -64,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cover: View
     private lateinit var btnRecord: Button
     private lateinit var txtBattery: TextView
+    private lateinit var txtBandwidth: TextView   // app download/upload, Mbps (beside battery)
 
     // Dropdowns
     private lateinit var btnCamera: Button
@@ -192,6 +194,7 @@ class MainActivity : AppCompatActivity() {
         cover         = findViewById(R.id.transition_cover)
         btnRecord     = findViewById(R.id.btn_record)
         txtBattery    = findViewById(R.id.txt_battery)
+        txtBandwidth  = findViewById(R.id.txt_bandwidth)
         btnCamera     = findViewById(R.id.btn_camera)
         btnZoom       = findViewById(R.id.btn_zoom)
         btnSound      = findViewById(R.id.btn_sound)
@@ -323,6 +326,52 @@ class MainActivity : AppCompatActivity() {
         txtBattery.text = if (known) "$pct%" else "--"
         txtBattery.backgroundTintList = ColorStateList.valueOf(
             if (low) 0xFFD32F2F.toInt() else 0xFF9E9E9E.toInt())
+    }
+
+    // -- Bandwidth meter (app download + upload over the app's UID, in Mbps) ---
+    // Samples cumulative byte counters once a second and shows download (rx) and
+    // upload (tx) separately next to the battery chip. Covers ALL of the app's
+    // traffic: RTSP video, UDP telemetry/mode/audio, TCP fire/heartbeat, etc.
+    private var lastRxBytes = -1L
+    private var lastTxBytes = -1L
+    private var lastNetTimeNs = 0L
+
+    private val bandwidthRunnable = object : Runnable {
+        override fun run() {
+            updateBandwidth()
+            mainHandler.postDelayed(this, 1000L)     // ~1 Hz refresh
+        }
+    }
+
+    // (rx, tx) cumulative bytes for this app's UID; falls back to device totals
+    // if per-UID stats are unsupported. null if unavailable.
+    private fun appRxTxBytes(): Pair<Long, Long>? {
+        val uid = android.os.Process.myUid()
+        val rx = TrafficStats.getUidRxBytes(uid)
+        val tx = TrafficStats.getUidTxBytes(uid)
+        if (rx >= 0 && tx >= 0) return rx to tx
+        val trx = TrafficStats.getTotalRxBytes()
+        val ttx = TrafficStats.getTotalTxBytes()
+        return if (trx >= 0 && ttx >= 0) trx to ttx else null
+    }
+
+    private fun updateBandwidth() {
+        val now = SystemClock.elapsedRealtimeNanos()
+        val cur = appRxTxBytes()
+        if (cur == null) { txtBandwidth.text = "↓-- ↑-- Mbps"; return }
+        val (rx, tx) = cur
+        if (lastRxBytes < 0) {
+            txtBandwidth.text = "↓-- ↑-- Mbps"          // seeding first sample
+        } else if (now > lastNetTimeNs) {
+            val dt = (now - lastNetTimeNs) / 1_000_000_000.0      // seconds
+            val down = (rx - lastRxBytes) * 8.0 / 1_000_000.0 / dt
+            val up   = (tx - lastTxBytes) * 8.0 / 1_000_000.0 / dt
+            txtBandwidth.text = String.format(Locale.US, "↓%.1f ↑%.1f Mbps",
+                maxOf(0.0, down), maxOf(0.0, up))
+        }
+        lastRxBytes = rx
+        lastTxBytes = tx
+        lastNetTimeNs = now
     }
 
     // -- Sound: master on/off + momentary hold-to-talk (half-duplex) ----------
@@ -646,6 +695,10 @@ class MainActivity : AppCompatActivity() {
         // Re-apply the intercom (default off on first launch). Never resume held.
         talking = false
         applyAudio()
+        // Bandwidth meter: reset baseline so the first tick just seeds, then poll.
+        lastRxBytes = -1L
+        lastTxBytes = -1L
+        mainHandler.post(bandwidthRunnable)
         // ONE socket on :9870 for battery + twin joints; released in onPause.
         telemetryReceiver.start()
         // SBUS mode feed on :9871 (separate port); also released in onPause.
@@ -671,6 +724,7 @@ class MainActivity : AppCompatActivity() {
         // Release the SBUS mode socket too; stop the stale fallback timer.
         sbusReceiver.stop()
         mainHandler.removeCallbacks(modeStaleRunnable)
+        mainHandler.removeCallbacks(bandwidthRunnable)
         gimbal.stopMove()
         // Drop mic/speaker in the background; state is re-applied in onResume.
         talking = false

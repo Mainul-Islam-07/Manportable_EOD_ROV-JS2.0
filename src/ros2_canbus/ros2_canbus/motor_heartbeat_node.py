@@ -79,6 +79,23 @@ DRIVE_BUS_FILTER = set(HB_CFG['drive_bus_filter'])
 
 
 # =========================================================================
+# Arm failsafe policy (hardcoded)
+# -------------------------------------------------------------------------
+# Decides what the ARM bus does when an arm motor is MISSING at startup or
+# LOSES its heartbeat at runtime:
+#
+#   True  -> FAILSAFE (current behavior): the ENTIRE arm bus goes loopback +
+#            latched, every alive arm motor disarmed. Nothing on the arm moves.
+#   False -> PARTIAL: run the arm motors that ARE present; loopback only the
+#            missing/lost one(s). The rest of the arm stays armed/controllable.
+#            NOTE: moving a partial arm (esp. beyond a dead mid-chain joint)
+#            can be mechanically unsafe.
+#
+# Drive-bus policy and the memory-battery-LOW whole-arm latch are unaffected.
+ARM_FAILSAFE_FULL_LOOPBACK = True
+
+
+# =========================================================================
 # Hardware bring-up (called before ROS init)
 # =========================================================================
 
@@ -370,11 +387,14 @@ class HeartbeatNode(Node):
                     self._trigger_drive_fault(
                         name, f"heartbeat lost for {elapsed:.1f}s (>={HB_FAULT_TIMEOUT}s)")
                 elif name in self._arm_motors:
-                    # Heartbeat loss on ANY arm motor latches the whole arm
-                    # bus down (policy: one arm motor missing → all arm
-                    # joints loopback, latched until process restart).
-                    self._trigger_arm_bus_fault(
-                        name, f"heartbeat lost for {elapsed:.1f}s (>={HB_FAULT_TIMEOUT}s)")
+                    reason = f"heartbeat lost for {elapsed:.1f}s (>={HB_FAULT_TIMEOUT}s)"
+                    if ARM_FAILSAFE_FULL_LOOPBACK:
+                        # FAILSAFE: heartbeat loss on ANY arm motor latches the
+                        # whole arm bus (all joints loopback, latched to restart).
+                        self._trigger_arm_bus_fault(name, reason)
+                    else:
+                        # PARTIAL: loopback just this motor; the rest keep running.
+                        self._trigger_arm_fault(name, reason)
 
     # -- bus-specific fault triggers ------------------------------------
 

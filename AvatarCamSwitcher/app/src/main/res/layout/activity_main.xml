@@ -69,6 +69,26 @@
         app:layout_constraintTop_toBottomOf="@id/btn_record"
         app:layout_constraintStart_toStartOf="@id/btn_record" />
 
+    <!-- App download + upload in Mbps, beside the battery chip. Updated ~1 Hz
+         from TrafficStats over the app's UID (all traffic: RTSP + UDP + TCP). -->
+    <TextView
+        android:id="@+id/txt_bandwidth"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:background="@drawable/bg_battery_chip"
+        android:backgroundTint="#9E9E9E"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="4dp"
+        android:fontFamily="monospace"
+        android:textColor="#FFFFFFFF"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        tools:text="↓3.4 ↑0.1 Mbps"
+        app:layout_constraintTop_toTopOf="@id/txt_battery"
+        app:layout_constraintBottom_toBottomOf="@id/txt_battery"
+        app:layout_constraintStart_toEndOf="@id/txt_battery" />
+
     <!-- REC oval toggle (top-left). Grey = idle ("REC"), red = recording
          ("REC MM:SS"); tint + text are driven in onRecordingStateChanged. -->
     <Button

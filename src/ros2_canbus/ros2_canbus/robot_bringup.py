@@ -40,7 +40,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 
 from ros2_canbus.can_utils import safe_disarm_all, safe_disconnect
-from ros2_canbus.motor_heartbeat_node import HeartbeatNode, bring_up_all
+from ros2_canbus.motor_heartbeat_node import (
+    HeartbeatNode, bring_up_all, ARM_FAILSAFE_FULL_LOOPBACK)
 from ros2_canbus.arm_controller import MotorController
 from ros2_canbus.drive_controller import DriveController
 from ros2_canbus.battery_monitor import BatteryMonitor
@@ -154,19 +155,30 @@ def main():
             safe_disconnect(nets, tag="ALL")
             return
 
-        # Rule 2: Any arm motor missing → ENTIRE arm bus starts latched in
-        # loopback (policy: one arm motor missing → all arm joints loopback,
-        # latched until process restart).  Drive continues normally.
-        arm_bus_latched_at_startup = bool(unavail_arm)
-        if unavail_arm:
+        # Rule 2: Arm motor(s) missing at startup. Behavior depends on
+        # ARM_FAILSAFE_FULL_LOOPBACK (defined in motor_heartbeat_node.py):
+        #   True  → FAILSAFE: ENTIRE arm bus loopback + latched, alive disarmed.
+        #   False → PARTIAL: run the present arm motors, loopback the missing.
+        # Drive continues normally either way.
+        if unavail_arm and ARM_FAILSAFE_FULL_LOOPBACK:
+            arm_bus_latched_at_startup = True
             print(f"[BRINGUP-WARN] Arm motor(s) unavailable at startup: "
-                  f"{list(unavail_arm.keys())}")
-            print(f"[BRINGUP-WARN] ENTIRE arm bus will start in loopback "
+                  f"{sorted(unavail_arm.keys())}")
+            print(f"[BRINGUP-WARN] FAILSAFE: ENTIRE arm bus will start in loopback "
                   f"(latched until restart). Disarming any alive arm motors. "
                   f"Drive bus operates normally.")
             # Disarm every alive arm motor — none should hold torque when the
             # arm chain is incomplete.
             safe_disarm_all(arm_motors, tag="ARM-LATCH")
+        elif unavail_arm:
+            arm_bus_latched_at_startup = False
+            print(f"[BRINGUP-WARN] Arm motor(s) unavailable at startup: "
+                  f"{sorted(unavail_arm.keys())}")
+            print(f"[BRINGUP-WARN] PARTIAL: running present arm motors "
+                  f"{sorted(arm_motors.keys())}; loopback for missing "
+                  f"{sorted(unavail_arm.keys())}. Drive bus operates normally.")
+        else:
+            arm_bus_latched_at_startup = False
 
         # -- 5. Create nodes ────────────────────────────────────────────
         #   arm_motors = only alive motors (CAN commands go here)
@@ -218,6 +230,10 @@ def main():
         if arm_bus_latched_at_startup:
             status_arm = (f"LATCHED (entire arm loopback; "
                           f"missing at boot: {sorted(unavail_arm.keys())})")
+        elif unavail_arm:
+            status_arm = (f"PARTIAL ({len(arm_motors)} active: "
+                          f"{sorted(arm_motors.keys())}; loopback: "
+                          f"{sorted(unavail_arm.keys())})")
         else:
             status_arm = f"OK ({len(arm_motors)} active)"
         print(f"[BRINGUP] All nodes spinning.  arm={status_arm}  drive=OK")
