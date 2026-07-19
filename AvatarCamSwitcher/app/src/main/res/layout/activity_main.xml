@@ -15,8 +15,8 @@
     android:layout_height="match_parent"
     android:background="@android:color/black">
 
-    <!-- Full-screen GStreamer video surface (UDP RTSP, ride-through pipeline). -->
-    <com.avatarrobot.camswitcher.video.GStreamerVideoView
+    <!-- Full-screen hardware video surface. -->
+    <com.alexvas.rtsp.widget.RtspSurfaceView
         android:id="@+id/rtsp_view"
         android:layout_width="0dp"
         android:layout_height="0dp"
