@@ -15,8 +15,8 @@
     android:layout_height="match_parent"
     android:background="@android:color/black">
 
-    <!-- Full-screen hardware video surface. -->
-    <com.alexvas.rtsp.widget.RtspSurfaceView
+    <!-- Full-screen GStreamer video surface (UDP RTSP, ride-through pipeline). -->
+    <com.avatarrobot.camswitcher.video.GStreamerVideoView
         android:id="@+id/rtsp_view"
         android:layout_width="0dp"
         android:layout_height="0dp"
@@ -54,17 +54,11 @@
          Independent of the 3D panel so toggling the figure never moves it. -->
     <TextView
         android:id="@+id/txt_battery"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
+        style="@style/HudInfo"
+        android:layout_marginTop="8dp"
         android:background="@drawable/bg_battery_chip"
         android:backgroundTint="#9E9E9E"
-        android:paddingHorizontal="10dp"
-        android:paddingVertical="4dp"
         android:fontFamily="monospace"
-        android:textColor="#FFFFFFFF"
-        android:textSize="12sp"
-        android:textStyle="bold"
         tools:text="44%"
         app:layout_constraintTop_toBottomOf="@id/btn_record"
         app:layout_constraintStart_toStartOf="@id/btn_record" />
@@ -73,17 +67,11 @@
          from TrafficStats over the app's UID (all traffic: RTSP + UDP + TCP). -->
     <TextView
         android:id="@+id/txt_bandwidth"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="6dp"
+        style="@style/HudInfo"
+        android:layout_marginStart="8dp"
         android:background="@drawable/bg_battery_chip"
         android:backgroundTint="#9E9E9E"
-        android:paddingHorizontal="10dp"
-        android:paddingVertical="4dp"
         android:fontFamily="monospace"
-        android:textColor="#FFFFFFFF"
-        android:textSize="12sp"
-        android:textStyle="bold"
         tools:text="↓3.4 ↑0.1 Mbps"
         app:layout_constraintTop_toTopOf="@id/txt_battery"
         app:layout_constraintBottom_toBottomOf="@id/txt_battery"
@@ -93,20 +81,9 @@
          ("REC MM:SS"); tint + text are driven in onRecordingStateChanged. -->
     <Button
         android:id="@+id/btn_record"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+        style="@style/HudChip"
         android:layout_margin="12dp"
-        android:minWidth="0dp"
-        android:minHeight="0dp"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="6dp"
         android:text="REC"
-        android:textColor="#FFFFFFFF"
-        android:textStyle="bold"
-        android:textSize="13sp"
-        android:background="@drawable/bg_record_pill"
-        android:backgroundTint="#9E9E9E"
-        android:stateListAnimator="@null"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
@@ -116,8 +93,6 @@
         android:id="@+id/btn_sound"
         style="@style/HudChip"
         android:layout_marginStart="8dp"
-        android:textSize="13sp"
-        android:backgroundTint="#9E9E9E"
         android:text="SOUND"
         app:layout_constraintTop_toTopOf="@id/btn_record"
         app:layout_constraintBottom_toBottomOf="@id/btn_record"
@@ -128,11 +103,8 @@
     <Button
         android:id="@+id/btn_fire"
         style="@style/HudChip"
-        android:layout_marginStart="24dp"
-        android:minWidth="120dp"
-        android:textSize="13sp"
+        android:layout_marginStart="8dp"
         android:text="FIRING"
-        android:backgroundTint="#9E9E9E"
         app:layout_constraintTop_toTopOf="@id/btn_record"
         app:layout_constraintBottom_toBottomOf="@id/btn_record"
         app:layout_constraintStart_toEndOf="@id/btn_sound" />
@@ -142,18 +114,11 @@
          no feed. -->
     <TextView
         android:id="@+id/txt_mode"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="10dp"
-        android:minWidth="64dp"
-        android:gravity="center"
+        style="@style/HudInfo"
+        android:layout_marginStart="8dp"
+        android:minWidth="60dp"
         android:background="@drawable/bg_record_pill"
         android:backgroundTint="#9E9E9E"
-        android:paddingHorizontal="14dp"
-        android:paddingVertical="6dp"
-        android:textColor="#FFFFFFFF"
-        android:textStyle="bold"
-        android:textSize="13sp"
         android:text="—"
         tools:text="DRIVE"
         app:layout_constraintTop_toTopOf="@id/btn_record"
@@ -166,11 +131,6 @@
         android:id="@+id/btn_camera"
         style="@style/HudChip"
         android:layout_marginStart="12dp"
-        android:minWidth="0dp"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="6dp"
-        android:textSize="13sp"
-        android:backgroundTint="#9E9E9E"
         android:text="MAIN"
         app:layout_constraintBottom_toBottomOf="@id/btn_3d"
         app:layout_constraintStart_toStartOf="parent" />
@@ -181,11 +141,6 @@
         android:id="@+id/btn_zoom"
         style="@style/HudChip"
         android:layout_marginStart="8dp"
-        android:minWidth="0dp"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="6dp"
-        android:textSize="13sp"
-        android:backgroundTint="#9E9E9E"
         android:text="1X"
         android:visibility="gone"
         tools:visibility="visible"
@@ -200,11 +155,6 @@
         style="@style/HudChip"
         android:layout_marginStart="12dp"
         android:layout_marginBottom="8dp"
-        android:minWidth="0dp"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="6dp"
-        android:textSize="13sp"
-        android:backgroundTint="#9E9E9E"
         android:text="TALK"
         android:visibility="gone"
         tools:visibility="visible"
@@ -216,10 +166,6 @@
         android:id="@+id/btn_3d"
         style="@style/HudChip"
         android:layout_margin="12dp"
-        android:minWidth="0dp"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="6dp"
-        android:textSize="13sp"
         android:text="3D"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
@@ -254,4 +200,27 @@
 
         <Button android:id="@+id/btn_tilt_down" style="@style/GimbalButton" android:text="▼" />
     </LinearLayout>
+
+    <!-- Persistent "reconnecting" indicator, centred over the black transition
+         cover. Shown by enterReconnecting() while a feed is failing / has not
+         delivered a first frame; hidden on onRtspFirstFrameRendered. Declared last
+         so it draws above the cover. -->
+    <TextView
+        android:id="@+id/txt_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_record_pill"
+        android:backgroundTint="#CC000000"
+        android:paddingHorizontal="18dp"
+        android:paddingVertical="10dp"
+        android:textColor="#FFFFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:visibility="gone"
+        tools:visibility="visible"
+        tools:text="RECONNECTING FRONT…"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 </androidx.constraintlayout.widget.ConstraintLayout>

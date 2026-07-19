@@ -15,7 +15,7 @@ one full-screen, zero-buffer viewport for the Avatar rover ground station.
 
 | Feed  | Camera          | Endpoint                               |
 |-------|-----------------|----------------------------------------|
-| MAIN  | SIYI A8 mini    | `rtsp://192.168.144.64:8554/main.264`  | ← default on launch
+| MAIN  | SIYI A8 mini    | `rtsp://192.168.144.25:8554/main.264`  | ← default on launch
 | FRONT | SIYI R1M        | `rtsp://192.168.144.65:8554/main.264`  |
 | BACK  | SIYI R1M        | `rtsp://192.168.144.66:8554/main.264`  |
 | WRIST | SIYI R1M        | `rtsp://192.168.144.67:8554/main.264`  |

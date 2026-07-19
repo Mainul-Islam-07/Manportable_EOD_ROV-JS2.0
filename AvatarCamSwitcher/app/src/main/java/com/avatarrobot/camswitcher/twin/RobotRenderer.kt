@@ -61,8 +61,11 @@ class RobotRenderer(
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        // Transparent clear so the camera feed behind the GLSurfaceView shows through.
-        GLES20.glClearColor(0f, 0f, 0f, 0f)
+        // Semi-transparent dark clear: tints the whole 3D panel so the robot reads
+        // clearly against a busy camera feed (a soft "shadow" behind the model).
+        // Because it lives in the GL surface, this backdrop shows ONLY while the 3D
+        // view is on — the panel is fully clear/absent when 3D is toggled off.
+        GLES20.glClearColor(0f, 0f, 0f, SHADOW_ALPHA)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         GLES20.glEnable(GLES20.GL_CULL_FACE)
         GLES20.glCullFace(GLES20.GL_BACK)
@@ -189,6 +192,10 @@ class RobotRenderer(
         private const val TAG = "JS2Renderer"
         private const val STRIDE = 6 * 4   // 6 floats (pos+normal) per vertex
 
+        // Backdrop darkness for the 3D panel (0 = clear video, 1 = solid black).
+        // ~0.35 gives a subtle shadow that lifts the robot without hiding the feed.
+        private const val SHADOW_ALPHA = 0.35f
+
         private const val VERT_SRC = """
             uniform mat4 uMVP;
             uniform mat4 uModel;
@@ -201,8 +208,8 @@ class RobotRenderer(
             }
         """
 
-        // Alpha 0.9 so the robot reads as solid but the camera feed still bleeds
-        // through faintly, matching the translucent-overlay HUD design.
+        // Alpha 0.85 so the robot reads clearly as a solid overlay while still
+        // letting a little of the camera feed through (translucent-overlay HUD).
         private const val FRAG_SRC = """
             precision mediump float;
             varying vec3 vWorldN;
@@ -213,7 +220,7 @@ class RobotRenderer(
                 // two-sided lambert so flipped/STL normals never go fully black
                 float diff = abs(dot(n, normalize(uLightDir)));
                 vec3 c = uColor * (0.35 + 0.75 * diff);
-                gl_FragColor = vec4(min(c, 1.0), 0.9);
+                gl_FragColor = vec4(min(c, 1.0), 0.85);
             }
         """
     }

@@ -6,19 +6,36 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Path to the extracted GStreamer Android *universal* SDK (contains arm64/, etc.).
+// Set it per build machine — NOT committed. Either:
+//   gradle.properties :  gstreamer.root.android=C:/gstreamer/1.24.x/android
+//   or environment    :  GSTREAMER_ROOT_ANDROID=C:/gstreamer/1.24.x/android
+def gstRoot = project.findProperty('gstreamer.root.android') ?: System.getenv('GSTREAMER_ROOT_ANDROID')
+
 android {
     namespace 'com.avatarrobot.camswitcher'
-    // Raised to 35 because transitive deps of rtsp-client-android (media3 1.9.3,
-    // camera-core 1.5.3) require compiling against API 35+. This is COMPILE-time
-    // only — it does NOT change which devices can install the app.
+    // Kept at 35 (harmless once rtsp-client-android's media3/camera-core deps are
+    // gone). COMPILE-time only — does not change which devices can install.
     compileSdk 35
+    // Pin to the NDK you installed via the SDK Manager; adjust to match.
+    ndkVersion "26.3.11579264"
 
     defaultConfig {
         applicationId "com.avatarrobot.camswitcher"
-        minSdk 24          // Android 7.0+ — Android 9 (API 28) is unaffected by the compileSdk bump
+        minSdk 24          // Android 7.0+ — must match jni/Application.mk APP_PLATFORM
         targetSdk 34       // left at 34: we don't need to opt into Android 15 runtime behavior
         versionCode 1
         versionName "1.0"
+        ndk { abiFilters 'arm64-v8a' }   // MK32 is arm64
+    }
+
+    // The GStreamer .so files are built by the ndkBuildGStreamer task below and
+    // picked up from this staging dir (we drive ndk-build ourselves instead of
+    // AGP's externalNativeBuild, which can't model GStreamer's prebuilt output).
+    sourceSets {
+        main {
+            jniLibs.srcDirs += "${buildDir}/gstreamerLibs"
+        }
     }
 
     buildTypes {
@@ -57,8 +74,36 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 
-    // ---- Low-latency, zero-buffer RTSP engine (JitPack) --------------------
-    // Pushes RTP straight into a hardware MediaCodec bound to a SurfaceView.
-    // No ExoPlayer, no libVLC, no jitter buffer.
-    implementation 'com.github.alexeyvasilyev:rtsp-client-android:5.6.4'
+    // Video is a GStreamer pipeline (see src/main/jni and video/GStreamerVideoView.kt).
+    // No Maven artifact — the .so is built by the ndkBuildGStreamer task below and
+    // org.freedesktop.gstreamer.GStreamer is generated into src/main/java.
 }
+
+// ---- GStreamer native build (manual ndk-build → jniLibs) -------------------
+// We drive ndk-build ourselves rather than via AGP's externalNativeBuild, which
+// cannot model GStreamer's hand-built libgstreamer_android.so "prebuilt". This
+// runs the default (all) target — which correctly builds the .so — installs the
+// libs into a jniLibs staging dir, and generates GStreamer.java into src/main/java.
+tasks.register('ndkBuildGStreamer', Exec) {
+    def isWin = org.gradle.internal.os.OperatingSystem.current().isWindows()
+    def ndkBuild = "${android.ndkDirectory}/ndk-build" + (isWin ? '.cmd' : '')
+    workingDir projectDir
+    doFirst {
+        if (gstRoot == null) throw new GradleException(
+            "gstreamer.root.android is not set (gradle.properties). See GSTREAMER_SETUP.md.")
+    }
+    commandLine ndkBuild,
+        'NDK_PROJECT_PATH=null',
+        "APP_BUILD_SCRIPT=${projectDir}/src/main/jni/Android.mk",
+        "NDK_APPLICATION_MK=${projectDir}/src/main/jni/Application.mk",
+        'APP_ABI=arm64-v8a',
+        'APP_PLATFORM=android-24',
+        "NDK_OUT=${buildDir}/gstreamerObj",
+        "NDK_LIBS_OUT=${buildDir}/gstreamerLibs",
+        "GSTREAMER_ROOT_ANDROID=${gstRoot}",
+        "GSTREAMER_JAVA_SRC_DIR=${projectDir}/src/main/java",
+        "GSTREAMER_ASSETS_DIR=${projectDir}/src/main/assets"
+}
+
+// The .so files and generated GStreamer.java must exist before compile/packaging.
+tasks.named('preBuild').configure { dependsOn 'ndkBuildGStreamer' }

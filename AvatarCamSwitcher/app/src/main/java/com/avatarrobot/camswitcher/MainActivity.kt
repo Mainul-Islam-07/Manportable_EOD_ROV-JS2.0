@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.net.TrafficStats
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -25,8 +24,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import com.alexvas.rtsp.widget.RtspStatusListener
-import com.alexvas.rtsp.widget.RtspSurfaceView
+import com.avatarrobot.camswitcher.video.GStreamerVideoView
 import com.avatarrobot.camswitcher.twin.JointState
 import com.avatarrobot.camswitcher.twin.OrbitGLSurfaceView
 import com.avatarrobot.camswitcher.twin.RobotRenderer
@@ -61,8 +59,9 @@ class MainActivity : AppCompatActivity() {
     /** FIRING/AIM button lifecycle. */
     private enum class FireUi { IDLE, COUNTING, AIM }
 
-    private lateinit var rtspView: RtspSurfaceView
+    private lateinit var rtspView: GStreamerVideoView
     private lateinit var cover: View
+    private lateinit var txtStatus: TextView      // centred "RECONNECTING …" indicator
     private lateinit var btnRecord: Button
     private lateinit var txtBattery: TextView
     private lateinit var txtBandwidth: TextView   // app download/upload, Mbps (beside battery)
@@ -91,7 +90,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btn3d: Button
     private val jointState = JointState()
     private lateinit var glView: OrbitGLSurfaceView
-    private var twinVisible = true
+    private var twinVisible = false        // 3D twin starts closed; tap 3D to show
+    private var twinSuspended = false      // twin overlay parked during a feed switch
 
     private lateinit var gimbalPanel: View
 
@@ -121,15 +121,21 @@ class MainActivity : AppCompatActivity() {
     private var videoH = 0
 
     // ---- State engine -------------------------------------------------------
+    // The GStreamer pipeline (re)build serializes on its own GMainContext thread,
+    // so there is no two-decoder-on-one-surface hazard: a switch just points the
+    // view at the new feed and plays. Hence no `switching`/forceStart dance.
     private var currentFeed: CameraFeed = CameraFeed.MAIN
     private var pendingFeed: CameraFeed? = CameraFeed.MAIN
     private var surfaceReady = false
-    private var switching = false
     private var reconnecting = false
+    private var weakSignal = false     // native stall reported; last frame held
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val forceStartRunnable = Runnable { beginPendingFeed() }
     private val retryRunnable = Runnable { retryCurrentFeed() }
+    // Fires if play() connects but no FIRST frame renders in time (camera booting,
+    // bad codec). Mid-stream stalls after the first frame are caught by the native
+    // frame-arrival watchdog (onStall/onOutage), not this one.
+    private val firstFrameWatchdog = Runnable { enterReconnecting() }
     private val countdownRunnable = Runnable { onFireCountdownDone() }
 
     // ---- Recording ----------------------------------------------------------
@@ -192,6 +198,7 @@ class MainActivity : AppCompatActivity() {
 
         rtspView      = findViewById(R.id.rtsp_view)
         cover         = findViewById(R.id.transition_cover)
+        txtStatus     = findViewById(R.id.txt_status)
         btnRecord     = findViewById(R.id.btn_record)
         txtBattery    = findViewById(R.id.txt_battery)
         txtBandwidth  = findViewById(R.id.txt_bandwidth)
@@ -220,39 +227,34 @@ class MainActivity : AppCompatActivity() {
         glView = OrbitGLSurfaceView(this, RobotRenderer(assets, jointState))
         twinContainer.addView(glView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // Twin starts closed: keep the GL surface torn down until the user taps 3D.
+        glView.visibility = View.GONE
         btn3d.setOnClickListener { toggleTwin() }
 
-        // Low-latency: no smoothing buffer; SPS rewrite OFF (it caused artifacts).
-        rtspView.videoFrameRateStabilization = false
-        rtspView.experimentalUpdateSpsFrameWithLowLatencyParams = LOW_LATENCY_SPS_REWRITE
-
-        rtspView.setStatusListener(object : RtspStatusListener {
-            override fun onRtspFirstFrameRendered() = runOnUiThread {
+        // GStreamer pipeline events. onStall/onOutage/onRecovered implement the
+        // ride-through UX: a brief stall holds the last frame under "WEAK SIGNAL";
+        // only a real outage (or hard error) falls back to the reconnect path.
+        rtspView.listener = object : GStreamerVideoView.Listener {
+            override fun onFirstFrame() = runOnUiThread {
                 reconnecting = false
+                weakSignal = false
                 mainHandler.removeCallbacks(retryRunnable)
+                mainHandler.removeCallbacks(firstFrameWatchdog)
+                hideReconnecting()
                 hideCover()
+                resumeTwinOverlay()
             }
-            override fun onRtspStatusDisconnected() = runOnUiThread {
-                if (switching || pendingFeed != null) beginPendingFeed()
-            }
-            override fun onRtspFrameSizeChanged(width: Int, height: Int) = runOnUiThread {
+            override fun onSizeChanged(width: Int, height: Int) = runOnUiThread {
                 fitSurfaceToVideo(width, height)
             }
-            override fun onRtspStatusFailed(message: String?) = runOnUiThread {
-                if (!surfaceReady) return@runOnUiThread
-                if (!reconnecting) {
-                    reconnecting = true
-                    Toast.makeText(this@MainActivity, "Stream error — reconnecting…",
-                        Toast.LENGTH_SHORT).show()
-                }
-                switching = false
-                showCover()
-                mainHandler.removeCallbacks(forceStartRunnable)
-                mainHandler.removeCallbacks(retryRunnable)
-                mainHandler.postDelayed(retryRunnable, RETRY_DELAY_MS)
-            }
-        })
+            override fun onError(message: String) = runOnUiThread { enterReconnecting() }
+            override fun onStall() = runOnUiThread { onWeakSignal() }
+            override fun onOutage() = runOnUiThread { enterReconnecting() }
+            override fun onRecovered() = runOnUiThread { onSignalRecovered() }
+        }
 
+        // MainActivity tracks surface readiness and drives play; the view's own
+        // holder callback binds the native surface (nativeSurfaceInit/Finalize).
         rtspView.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 surfaceReady = true
@@ -262,9 +264,8 @@ class MainActivity : AppCompatActivity() {
             override fun surfaceChanged(h: SurfaceHolder, fmt: Int, w: Int, ht: Int) { /* no-op */ }
             override fun surfaceDestroyed(holder: SurfaceHolder) {
                 surfaceReady = false
-                switching = false
-                mainHandler.removeCallbacks(forceStartRunnable)
                 mainHandler.removeCallbacks(retryRunnable)
+                mainHandler.removeCallbacks(firstFrameWatchdog)
                 rtspView.stop()
             }
         })
@@ -287,8 +288,8 @@ class MainActivity : AppCompatActivity() {
         cameraDropdown.setCurrent(currentFeed)
         updateMainOnlyControls(currentFeed)
         updateBattery(-1)                  // grey "--" until the first packet
-        // 3D figure is shown by default → 3D button starts green (grey when off).
-        btn3d.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#2E7D32"))
+        // 3D figure is hidden by default → 3D button starts grey (green when on).
+        btn3d.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#9E9E9E"))
         showModeNoLink()                   // grey "—" until the first SBUS packet
         showCover()
     }
@@ -574,46 +575,40 @@ class MainActivity : AppCompatActivity() {
 
     // -- Camera switching (does NOT touch recording) --------------------------
     private fun switchTo(feed: CameraFeed) {
-        if (feed == currentFeed && rtspView.isStarted() && !switching) return
+        if (feed == currentFeed && rtspView.isStarted() && !reconnecting) return
 
         currentFeed = feed
         pendingFeed = feed
         reconnecting = false
+        weakSignal = false
         mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(firstFrameWatchdog)
+        hideReconnecting()
         cameraDropdown.setCurrent(feed)
         updateMainOnlyControls(feed)
-        showCover()
+        showCover()                 // black transition until the new feed's first frame
+        suspendTwinOverlay()
 
         if (!surfaceReady) return
-        if (switching) return
-
-        if (rtspView.isStarted()) {
-            switching = true
-            rtspView.stop()
-            mainHandler.removeCallbacks(forceStartRunnable)
-            mainHandler.postDelayed(forceStartRunnable, START_TIMEOUT_MS)
-        } else {
-            beginPendingFeed()
-        }
+        beginPendingFeed()
     }
 
     private fun beginPendingFeed() {
         if (!surfaceReady) return
-        mainHandler.removeCallbacks(forceStartRunnable)
-        switching = false
         val feed = pendingFeed ?: currentFeed
         pendingFeed = null
-
-        rtspView.stop()
-        rtspView.videoRotation = feed.rotation
-        rtspView.init(Uri.parse(feed.url))
-        rtspView.start(requestVideo = true, requestAudio = false)
+        // setFeed just records url+rotation; play() posts a pipeline (re)build on
+        // the GStreamer context thread, which tears down any old pipeline first.
+        rtspView.setFeed(feed.url, feed.rotation)
+        rtspView.play()
+        // Initial-connect guard: if no FIRST frame renders in time, reconnect.
+        mainHandler.removeCallbacks(firstFrameWatchdog)
+        mainHandler.postDelayed(firstFrameWatchdog, FIRST_FRAME_TIMEOUT_MS)
     }
 
     private fun retryCurrentFeed() {
         if (!surfaceReady) return
         pendingFeed = currentFeed
-        showCover()
         beginPendingFeed()
     }
 
@@ -688,7 +683,64 @@ class MainActivity : AppCompatActivity() {
     private fun showCover() { cover.visibility = View.VISIBLE }
     private fun hideCover() { cover.visibility = View.GONE }
 
+    private fun showReconnecting() {
+        txtStatus.text = "RECONNECTING ${currentFeed.label}…"
+        txtStatus.visibility = View.VISIBLE
+    }
+    private fun hideReconnecting() { txtStatus.visibility = View.GONE }
+
+    // Brief stall (native onStall): the pipeline is intact and glimagesink holds
+    // the last frame — just flag "WEAK SIGNAL", do NOT black out or rebuild.
+    private fun onWeakSignal() {
+        if (reconnecting) return
+        weakSignal = true
+        txtStatus.text = "WEAK SIGNAL ${currentFeed.label}…"
+        txtStatus.visibility = View.VISIBLE
+    }
+    private fun onSignalRecovered() {
+        weakSignal = false
+        if (!reconnecting) hideReconnecting()
+    }
+
+    // Real outage / hard error / connected-but-no-first-frame: rebuilding the
+    // pipeline blanks the surface anyway, so raise the black cover, park the twin,
+    // show the indicator, and schedule the rebuild retry.
+    private fun enterReconnecting() {
+        if (!surfaceReady) return
+        reconnecting = true
+        showCover()
+        suspendTwinOverlay()
+        showReconnecting()
+        mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(firstFrameWatchdog)
+        mainHandler.postDelayed(retryRunnable, RETRY_DELAY_MS)
+    }
+
+    // The 3D twin is a media-overlay GL surface, which the compositor can float
+    // ABOVE the plain-View cover — so during a feed switch its transparent pixels
+    // leak the old feed's last frame in the twin rectangle. Take it down for the
+    // black transition and restore it when the new feed's first frame renders.
+    // Both are no-ops when 3D is off; the flag keeps pause/resume balanced.
+    private fun suspendTwinOverlay() {
+        if (!twinVisible || twinSuspended) return
+        twinSuspended = true
+        glView.onPause()
+        glView.visibility = View.GONE
+    }
+
+    private fun resumeTwinOverlay() {
+        if (!twinVisible || !twinSuspended) return
+        twinSuspended = false
+        glView.visibility = View.VISIBLE
+        glView.onResume()
+    }
+
     // -- Lifecycle ------------------------------------------------------------
+    // The RTSP stream is torn down/restarted in onStop/onStart (true background),
+    // NOT onPause/onResume. Transient overlays — the screen-record consent dialog,
+    // permission prompts — only fire onPause, so the live video survives them
+    // without a black reflash. onPause/onResume handle only the audio/telemetry
+    // background housekeeping and the GL twin.
     override fun onResume() {
         super.onResume()
         onRecordingStateChanged(ScreenRecordService.isRecording)
@@ -703,22 +755,22 @@ class MainActivity : AppCompatActivity() {
         telemetryReceiver.start()
         // SBUS mode feed on :9871 (separate port); also released in onPause.
         sbusReceiver.start()
-        if (twinVisible) glView.onResume()    // stay hidden if toggled off
-        if (surfaceReady) {
-            pendingFeed = currentFeed
-            showCover()
-            beginPendingFeed()
+        // Bring the GL twin back (paused in onPause). A restart after real
+        // background runs on a fresh surface, so there is no stale frame to guard.
+        if (twinVisible) {
+            twinSuspended = false
+            glView.visibility = View.VISIBLE
+            glView.onResume()
         }
+        // If the stream survived a transient pause, reveal it (the cover was raised
+        // in onPause to blank the recents thumbnail).
+        if (surfaceReady && rtspView.isStarted()) hideCover()
     }
 
     override fun onPause() {
         super.onPause()
-        switching = false
-        reconnecting = false
-        mainHandler.removeCallbacks(forceStartRunnable)
-        mainHandler.removeCallbacks(retryRunnable)
-        rtspView.stop()
         glView.onPause()
+        twinSuspended = false                 // GL surface is paused; state reset for resume
         // Release :9870 so the dashboard can own it while we are backgrounded.
         telemetryReceiver.stop()
         // Release the SBUS mode socket too; stop the stale fallback timer.
@@ -730,6 +782,30 @@ class MainActivity : AppCompatActivity() {
         talking = false
         audioLink.setMicEnabled(false)
         audioLink.setSpeakerEnabled(false)
+        // Blank the recents/multitasking thumbnail without stopping the stream.
+        showCover()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Restart if we were fully stopped but the surface survived; the usual
+        // background path recreates the surface, which restarts via surfaceCreated.
+        if (surfaceReady && !rtspView.isStarted()) {
+            pendingFeed = currentFeed
+            showCover()
+            beginPendingFeed()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // True background (screen off / home / a fully-obscuring activity like AIM).
+        reconnecting = false
+        weakSignal = false
+        mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(firstFrameWatchdog)
+        hideReconnecting()
+        rtspView.stop()
         showCover()
     }
 
@@ -737,6 +813,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         ScreenRecordService.onStateChange = null
         mainHandler.removeCallbacks(countdownRunnable)
+        rtspView.release()                     // destroy the native GStreamer context
         // App closing: drop fire mode (the server also auto-zeroes after the
         // socket drops, but stop explicitly so it happens immediately).
         HeartbeatClient.stop()
@@ -745,9 +822,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val LOW_LATENCY_SPS_REWRITE = false
-        private const val START_TIMEOUT_MS = 800L
-        private const val RETRY_DELAY_MS = 1500L
+        // Retry cadence for the outage/reconnect loop (pipeline rebuild).
+        private const val RETRY_DELAY_MS = 3000L
+        // Max wait for the FIRST frame after play() before we treat the feed as
+        // failed (camera booting / bad codec). Mid-stream stalls are handled by
+        // the native frame-arrival watchdog instead.
+        private const val FIRST_FRAME_TIMEOUT_MS = 6000L
         private const val FIRE_COUNTDOWN_MS = 15_000L
         // SBUS mode feed is ~5 Hz (200 ms); ~12 missed packets → show "—".
         private const val MODE_STALE_MS = 2500L

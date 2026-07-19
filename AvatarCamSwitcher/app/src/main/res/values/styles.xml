@@ -51,18 +51,39 @@
     <!-- Collapsed tap-to-expand dropdown button (CAMERA / ZOOM / SOUND) and the
          FIRING/AIM and 3D toggle chips. The expanded list is built in code by
          HudDropdown; this is just the resting chip. -->
+    <!-- Single source of truth for HUD chip size so REC / SOUND / FIRING / MAIN /
+         1X / 3D / TALK all share one small, uniform look. Width flexes to the
+         label above a common 60dp floor (so "SOUND ON" / "REC 00:00" never clip),
+         but text size, height and padding are identical across every chip. Do NOT
+         re-override these in the layout — that is what made the buttons uneven. -->
     <style name="HudChip">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:minWidth">56dp</item>
+        <item name="android:minWidth">60dp</item>
         <item name="android:minHeight">0dp</item>
         <item name="android:paddingHorizontal">10dp</item>
         <item name="android:paddingVertical">5dp</item>
+        <item name="android:gravity">center</item>
         <item name="android:textColor">#FFFFFFFF</item>
         <item name="android:textStyle">bold</item>
         <item name="android:textSize">11sp</item>
         <item name="android:background">@drawable/bg_record_pill</item>
-        <item name="android:backgroundTint">#99000000</item>
+        <item name="android:backgroundTint">#9E9E9E</item>
         <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <!-- Info readout (battery / bandwidth / SBUS mode). Matches the chip height,
+         text size and padding so the whole HUD row lines up; background + tint are
+         set per-view since these carry their own state colours. -->
+    <style name="HudInfo">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:paddingHorizontal">10dp</item>
+        <item name="android:paddingVertical">5dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textColor">#FFFFFFFF</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">11sp</item>
     </style>
 </resources>
