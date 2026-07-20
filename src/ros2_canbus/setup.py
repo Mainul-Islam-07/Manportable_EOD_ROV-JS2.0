@@ -39,7 +39,8 @@ setup(
             'light = ros2_canbus.light_control_node:main',
             'fire = ros2_canbus.fire_server:main',
             'diagnostics = ros2_canbus.telemetry_udp_bridge:main',
-            'mode = ros2_canbus.sbus_mode_udp_bridge:main'
+            'mode = ros2_canbus.sbus_mode_udp_bridge:main',
+            'bms = ros2_canbus.battery_bms:main'
         ],
     },
 )

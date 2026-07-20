@@ -4,8 +4,8 @@ bringup_sequence.launch.py
 ==========================
 Starts the full robot stack one process at a time, 3 s apart, in order:
 
-    sim_headless -> sbus -> robot -> battery -> light -> fire -> mode
-    -> diagnostics -> coordinator
+    sim_headless -> sbus -> robot -> light -> fire -> mode
+    -> diagnostics -> bms -> coordinator
 
 Each entry mirrors the matching alias in ~/.bashrc. Processes are STARTED 3 s
 apart (TimerAction) then keep running; the gap lets each come up before the
@@ -27,6 +27,7 @@ SEQUENCE = [
     ("fire",         "ros2 run ros2_canbus fire"),
     ("mode",         "ros2 run ros2_canbus mode"),
     ("diagnostics",  "ros2 run ros2_canbus diagnostics"),
+    ("bms",          "ros2 run ros2_canbus bms"),
     ("coordinator",  "ros2 run controller_manager spawner flipper_controller "
                      "&& ros2 launch part_assembly_for_urdf_coordinator coordinator.launch.py"),
 ]

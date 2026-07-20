@@ -72,7 +72,7 @@
         <item name="android:stateListAnimator">@null</item>
     </style>
 
-    <!-- Info readout (battery / bandwidth / SBUS mode). Matches the chip height,
+    <!-- Info readout (battery / SBUS mode). Matches the chip height,
          text size and padding so the whole HUD row lines up; background + tint are
          set per-view since these carry their own state colours. -->
     <style name="HudInfo">

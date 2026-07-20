@@ -1,6 +1,7 @@
 package com.avatarrobot.camswitcher
 
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
@@ -9,6 +10,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.PopupWindow
+import android.widget.TextView
 
 /**
  * A compact tap-to-expand dropdown for the HUD (CAMERA / ZOOM / SOUND).
@@ -71,20 +73,24 @@ class HudDropdown<T>(
 
         for ((value, label) in options) {
             val selected = value == current
-            val item = Button(ctx).apply {
+            // Each item is a compact chip matching the HudChip buttons (bold 11sp,
+            // 60dp min width, 10/5 padding) rather than a full-width stretched box.
+            val item = TextView(ctx).apply {
                 text = label
                 isAllCaps = true
                 setTextColor(Color.WHITE)
                 textSize = 11f
+                typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
-                minWidth = 0; minHeight = 0
+                minWidth = dp(60f).toInt(); minHeight = 0
                 setPadding(dp(10f).toInt(), dp(5f).toInt(), dp(10f).toInt(), dp(5f).toInt())
-                stateListAnimator = null
                 background = GradientDrawable().apply {
-                    setColor(if (selected) Color.parseColor("#FF2E7D32") else Color.parseColor("#33FFFFFF"))
-                    cornerRadius = dp(4f)
+                    setColor(if (selected) Color.parseColor("#FF2E7D32") else Color.parseColor("#FF9E9E9E"))
+                    cornerRadius = dp(6f)
                     if (selected) setStroke(dp(1f).toInt(), Color.parseColor("#FF66BB6A"))
                 }
+                isClickable = true
+                isFocusable = true
                 setOnClickListener {
                     setCurrent(value)
                     popup?.dismiss()
@@ -92,8 +98,11 @@ class HudDropdown<T>(
                 }
             }
             val lp = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(2f).toInt(); bottomMargin = dp(2f).toInt() }
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = dp(3f).toInt(); bottomMargin = dp(3f).toInt()
+            }
             list.addView(item, lp)
         }
 

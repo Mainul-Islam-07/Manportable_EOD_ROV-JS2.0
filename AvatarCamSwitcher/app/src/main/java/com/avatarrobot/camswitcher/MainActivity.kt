@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
-import android.net.TrafficStats
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -25,6 +24,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import com.alexvas.rtsp.widget.RtspDataListener
 import com.alexvas.rtsp.widget.RtspStatusListener
 import com.alexvas.rtsp.widget.RtspSurfaceView
 import com.avatarrobot.camswitcher.twin.JointState
@@ -51,11 +51,11 @@ import java.util.Locale
 class MainActivity : AppCompatActivity() {
 
     enum class CameraFeed(val label: String, val url: String, val rotation: Int) {
-        FRONT("FRONT", "rtsp://192.168.144.65:8554/main.264", 180),  // upside-down mount
-        BACK ("BACK",  "rtsp://192.168.144.66:8554/main.264", 180),  // upside-down mount
-        WRIST("WRIST", "rtsp://192.168.144.67:8554/main.264", 0),
-        GRIP ("GRIP",  "rtsp://192.168.144.68:8554/main.264", 0),
-        MAIN ("MAIN",  "rtsp://192.168.144.25:8554/main.264", 0)
+        FRONT("FRONT CAM", "rtsp://192.168.144.65:8554/main.264", 180),  // upside-down mount
+        BACK ("BACK CAM",  "rtsp://192.168.144.66:8554/main.264", 180),  // upside-down mount
+        WRIST("WRIST CAM", "rtsp://192.168.144.67:8554/main.264", 0),
+        GRIP ("GRIP CAM",  "rtsp://192.168.144.68:8554/main.264", 0),
+        MAIN ("MAIN CAM",  "rtsp://192.168.144.25:8554/main.264", 0)
     }
 
     /** FIRING/AIM button lifecycle. */
@@ -66,7 +66,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var txtStatus: TextView      // centred "RECONNECTING …" indicator
     private lateinit var btnRecord: Button
     private lateinit var txtBattery: TextView
-    private lateinit var txtBandwidth: TextView   // app download/upload, Mbps (beside battery)
 
     // Dropdowns
     private lateinit var btnCamera: Button
@@ -136,6 +135,29 @@ class MainActivity : AppCompatActivity() {
     // bad codec, stalled encoder) — routes into the reconnect path so the screen
     // never sits on indefinite black.
     private val firstFrameWatchdog = Runnable { enterReconnecting() }
+
+    // Frame-arrival heartbeat: the RTSP data listener stamps this on every video
+    // NAL unit. Because TCP head-of-line blocking freezes the picture (holding the
+    // last frame) instead of erroring, we watch for a gap in NAL arrivals and cover
+    // the frozen frame with black almost immediately — then uncover the instant
+    // frames resume. A sustained freeze escalates to a real reconnect via the
+    // library's own socket-read timeout (onRtspStatusFailed).
+    @Volatile private var lastVideoNalMs = 0L
+    private var frozen = false                 // black cover shown for a live-stream freeze
+    private val stallWatchdog = object : Runnable {
+        override fun run() {
+            if (surfaceReady && !reconnecting) {
+                val idle = SystemClock.elapsedRealtime() - lastVideoNalMs
+                if (idle > STALL_TIMEOUT_MS) {
+                    if (!frozen) { frozen = true; showCover() }       // freeze → instant black
+                } else if (frozen) {
+                    frozen = false; hideCover()                       // frames back → uncover
+                }
+                mainHandler.postDelayed(this, STALL_CHECK_MS)
+            }
+        }
+    }
+
     private val countdownRunnable = Runnable { onFireCountdownDone() }
 
     // ---- Recording ----------------------------------------------------------
@@ -201,7 +223,6 @@ class MainActivity : AppCompatActivity() {
         txtStatus     = findViewById(R.id.txt_status)
         btnRecord     = findViewById(R.id.btn_record)
         txtBattery    = findViewById(R.id.txt_battery)
-        txtBandwidth  = findViewById(R.id.txt_bandwidth)
         btnCamera     = findViewById(R.id.btn_camera)
         btnZoom       = findViewById(R.id.btn_zoom)
         btnSound      = findViewById(R.id.btn_sound)
@@ -238,11 +259,16 @@ class MainActivity : AppCompatActivity() {
         rtspView.setStatusListener(object : RtspStatusListener {
             override fun onRtspFirstFrameRendered() = runOnUiThread {
                 reconnecting = false
+                frozen = false
                 mainHandler.removeCallbacks(retryRunnable)
                 mainHandler.removeCallbacks(firstFrameWatchdog)
                 hideReconnecting()
                 hideCover()
                 resumeTwinOverlay()
+                // Stream is live — start the frame-arrival heartbeat.
+                lastVideoNalMs = SystemClock.elapsedRealtime()
+                mainHandler.removeCallbacks(stallWatchdog)
+                mainHandler.postDelayed(stallWatchdog, STALL_CHECK_MS)
             }
             override fun onRtspStatusDisconnected() = runOnUiThread {
                 if (switching || pendingFeed != null) beginPendingFeed()
@@ -252,6 +278,16 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onRtspStatusFailed(message: String?) = runOnUiThread {
                 enterReconnecting()
+            }
+        })
+
+        // Heartbeat source: fired (on the RTSP IO thread) for each video NAL unit.
+        // We only stamp the arrival time; stallWatchdog reads it on the UI thread.
+        rtspView.setDataListener(object : RtspDataListener {
+            override fun onRtspDataVideoNalUnitReceived(
+                data: ByteArray, offset: Int, length: Int, timestamp: Long
+            ) {
+                lastVideoNalMs = SystemClock.elapsedRealtime()
             }
         })
 
@@ -268,6 +304,7 @@ class MainActivity : AppCompatActivity() {
                 mainHandler.removeCallbacks(forceStartRunnable)
                 mainHandler.removeCallbacks(retryRunnable)
                 mainHandler.removeCallbacks(firstFrameWatchdog)
+                mainHandler.removeCallbacks(stallWatchdog)
                 rtspView.stop()
             }
         })
@@ -307,9 +344,9 @@ class MainActivity : AppCompatActivity() {
         cameraDropdown = HudDropdown(
             btnCamera,
             listOf(
-                CameraFeed.MAIN to "MAIN", CameraFeed.FRONT to "FRONT",
-                CameraFeed.BACK to "BACK", CameraFeed.WRIST to "WRIST",
-                CameraFeed.GRIP to "GRIP",
+                CameraFeed.MAIN to CameraFeed.MAIN.label, CameraFeed.FRONT to CameraFeed.FRONT.label,
+                CameraFeed.BACK to CameraFeed.BACK.label, CameraFeed.WRIST to CameraFeed.WRIST.label,
+                CameraFeed.GRIP to CameraFeed.GRIP.label,
             ),
             dropUp = true,
         ) { feed -> switchTo(feed) }
@@ -329,52 +366,6 @@ class MainActivity : AppCompatActivity() {
         txtBattery.text = if (known) "$pct%" else "--"
         txtBattery.backgroundTintList = ColorStateList.valueOf(
             if (low) 0xFFD32F2F.toInt() else 0xFF9E9E9E.toInt())
-    }
-
-    // -- Bandwidth meter (app download + upload over the app's UID, in Mbps) ---
-    // Samples cumulative byte counters once a second and shows download (rx) and
-    // upload (tx) separately next to the battery chip. Covers ALL of the app's
-    // traffic: RTSP video, UDP telemetry/mode/audio, TCP fire/heartbeat, etc.
-    private var lastRxBytes = -1L
-    private var lastTxBytes = -1L
-    private var lastNetTimeNs = 0L
-
-    private val bandwidthRunnable = object : Runnable {
-        override fun run() {
-            updateBandwidth()
-            mainHandler.postDelayed(this, 1000L)     // ~1 Hz refresh
-        }
-    }
-
-    // (rx, tx) cumulative bytes for this app's UID; falls back to device totals
-    // if per-UID stats are unsupported. null if unavailable.
-    private fun appRxTxBytes(): Pair<Long, Long>? {
-        val uid = android.os.Process.myUid()
-        val rx = TrafficStats.getUidRxBytes(uid)
-        val tx = TrafficStats.getUidTxBytes(uid)
-        if (rx >= 0 && tx >= 0) return rx to tx
-        val trx = TrafficStats.getTotalRxBytes()
-        val ttx = TrafficStats.getTotalTxBytes()
-        return if (trx >= 0 && ttx >= 0) trx to ttx else null
-    }
-
-    private fun updateBandwidth() {
-        val now = SystemClock.elapsedRealtimeNanos()
-        val cur = appRxTxBytes()
-        if (cur == null) { txtBandwidth.text = "↓-- ↑-- Mbps"; return }
-        val (rx, tx) = cur
-        if (lastRxBytes < 0) {
-            txtBandwidth.text = "↓-- ↑-- Mbps"          // seeding first sample
-        } else if (now > lastNetTimeNs) {
-            val dt = (now - lastNetTimeNs) / 1_000_000_000.0      // seconds
-            val down = (rx - lastRxBytes) * 8.0 / 1_000_000.0 / dt
-            val up   = (tx - lastTxBytes) * 8.0 / 1_000_000.0 / dt
-            txtBandwidth.text = String.format(Locale.US, "↓%.1f ↑%.1f Mbps",
-                maxOf(0.0, down), maxOf(0.0, up))
-        }
-        lastRxBytes = rx
-        lastTxBytes = tx
-        lastNetTimeNs = now
     }
 
     // -- Sound: master on/off + momentary hold-to-talk (half-duplex) ----------
@@ -582,7 +573,9 @@ class MainActivity : AppCompatActivity() {
         currentFeed = feed
         pendingFeed = feed
         reconnecting = false
+        frozen = false
         mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(stallWatchdog)
         cameraDropdown.setCurrent(feed)
         updateMainOnlyControls(feed)
         showCover()
@@ -605,6 +598,7 @@ class MainActivity : AppCompatActivity() {
         if (!surfaceReady) return
         mainHandler.removeCallbacks(forceStartRunnable)
         switching = false
+        frozen = false
         val feed = pendingFeed ?: currentFeed
         pendingFeed = null
 
@@ -614,6 +608,8 @@ class MainActivity : AppCompatActivity() {
         // library's ~5 s default; watchdog covers the connected-but-no-video case.
         rtspView.init(Uri.parse(feed.url), socketTimeout = SOCKET_TIMEOUT_MS)
         rtspView.start(requestVideo = true, requestAudio = false)
+        // New stream: the heartbeat re-arms only once its first frame renders.
+        mainHandler.removeCallbacks(stallWatchdog)
         mainHandler.removeCallbacks(firstFrameWatchdog)
         mainHandler.postDelayed(firstFrameWatchdog, FIRST_FRAME_TIMEOUT_MS)
     }
@@ -711,12 +707,14 @@ class MainActivity : AppCompatActivity() {
         if (!surfaceReady) return
         reconnecting = true
         switching = false
+        frozen = false
         showCover()
         suspendTwinOverlay()
         showReconnecting()
         mainHandler.removeCallbacks(forceStartRunnable)
         mainHandler.removeCallbacks(retryRunnable)
         mainHandler.removeCallbacks(firstFrameWatchdog)
+        mainHandler.removeCallbacks(stallWatchdog)
         mainHandler.postDelayed(retryRunnable, RETRY_DELAY_MS)
     }
 
@@ -751,10 +749,6 @@ class MainActivity : AppCompatActivity() {
         // Re-apply the intercom (default off on first launch). Never resume held.
         talking = false
         applyAudio()
-        // Bandwidth meter: reset baseline so the first tick just seeds, then poll.
-        lastRxBytes = -1L
-        lastTxBytes = -1L
-        mainHandler.post(bandwidthRunnable)
         // ONE socket on :9870 for battery + twin joints; released in onPause.
         telemetryReceiver.start()
         // SBUS mode feed on :9871 (separate port); also released in onPause.
@@ -780,7 +774,6 @@ class MainActivity : AppCompatActivity() {
         // Release the SBUS mode socket too; stop the stale fallback timer.
         sbusReceiver.stop()
         mainHandler.removeCallbacks(modeStaleRunnable)
-        mainHandler.removeCallbacks(bandwidthRunnable)
         gimbal.stopMove()
         // Drop mic/speaker in the background; state is re-applied in onResume.
         talking = false
@@ -806,9 +799,11 @@ class MainActivity : AppCompatActivity() {
         // True background (screen off / home / a fully-obscuring activity like AIM).
         switching = false
         reconnecting = false
+        frozen = false
         mainHandler.removeCallbacks(forceStartRunnable)
         mainHandler.removeCallbacks(retryRunnable)
         mainHandler.removeCallbacks(firstFrameWatchdog)
+        mainHandler.removeCallbacks(stallWatchdog)
         hideReconnecting()
         rtspView.stop()
         showCover()
@@ -835,6 +830,14 @@ class MainActivity : AppCompatActivity() {
         // Max wait for the first decoded frame after start() before we treat the
         // feed as failed (camera booting / bad codec / stalled encoder).
         private const val FIRST_FRAME_TIMEOUT_MS = 6000L
+        // Freeze detector: if no video NAL arrives for this long the picture has
+        // frozen (TCP head-of-line block), so cover it with black; we uncover the
+        // moment NALs resume. Aggressive for near-instant black — a false trip on
+        // jitter is just a brief flash, since recovery is immediate. Lower this for
+        // even faster black (risking flicker on a jittery link); raise it if a
+        // healthy feed flashes black. Must stay above the normal inter-frame gap.
+        private const val STALL_TIMEOUT_MS = 300L
+        private const val STALL_CHECK_MS = 100L
         private const val FIRE_COUNTDOWN_MS = 15_000L
         // SBUS mode feed is ~5 Hz (200 ms); ~12 missed packets → show "—".
         private const val MODE_STALE_MS = 2500L

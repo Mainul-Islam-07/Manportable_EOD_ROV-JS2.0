@@ -39,7 +39,10 @@ MY  = CFG['drive_controller']
 
 # -- shared --
 SM                       = CFG['state_machine']
-IDLE_SECONDS             = float(SM['idle_seconds'])
+# Drive motors disarm shortly after the command reaches 0 (they still stop
+# instantly via IDLE_STOP). Drive-specific override; the arm keeps the shared
+# (long) idle_seconds so the manipulator holds position when idle.
+IDLE_SECONDS             = float(MY.get('idle_seconds', SM['idle_seconds']))
 RE_ARM_WAIT_S            = float(SM['re_arm_wait_s'])
 EPS_CNT                  = int(SM['eps_cnt'])
 EPS_VEL_CAN              = int(SM['eps_vel_can'])

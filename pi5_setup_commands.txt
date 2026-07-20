@@ -140,6 +140,37 @@ sudo reboot          # required: config.txt + group membership both need it
 # [CHECK] after reboot:  ls -l /dev/ttyAMA0   &&   groups | grep dialout
 # NOTE: SBUS is inverted -- an external inverter or the SIYI receiver must feed it.
 
+# --- 11b. USB current cap -- CAN adapters go RED at boot with the BMS FTDI TTL --
+# We power the Pi 5 from a 5V/10A buck straight into USB-C. A plain buck does NOT
+# do USB-C PD negotiation, so the firmware defaults the USB ports to a 600 mA TOTAL
+# cap. At boot the 2 USB-CAN adapters (can_drive/can_arm) + the FTDI TTL power up
+# together, exceed 600 mA, and the firmware current-limits -> a CAN adapter browns
+# out (red). (Plugging the TTL in AFTER boot dodges the simultaneous inrush.)
+# The 10A buck can supply it -- just tell the firmware it is allowed to:
+sudo sh -c 'printf "\nusb_max_current_enable=1\n" >> /boot/firmware/config.txt'
+sudo reboot          # required: config.txt change
+# [CHECK] after reboot (with the TTL plugged in at boot):
+#   vcgencmd get_config usb_max_current_enable    # -> usb_max_current_enable=1
+#   ip link show can_drive && ip link show can_arm # both UP, no red
+#   dmesg | grep -iE "over.?current|usb.*current"  # no current-limit events
+# NOTE: the BMS now uses a hardware UART (step 11c) instead of a USB FTDI, so the
+# extra USB device is gone -- that alone removes it from the boot USB-current budget.
+
+# --- 11c. BMS UART -- JK-BD BMS on the Pi 5 hardware UART (GPIO 12/13) ----------
+# battery_bms.py (ros2_canbus 'bms' node) reads the BMS over UART instead of an
+# FTDI USB-TTL. Wiring: BMS TX -> Pi GPIO13 (RXD), BMS RX -> Pi GPIO12 (TXD),
+# GND common, 3.3 V logic.
+# On the Pi 5, GPIO 12/13 is uart4-pi5 -> /dev/ttyAMA4 (NOT uart5/ttyAMA5):
+sudo sh -c 'printf "\ndtoverlay=uart4-pi5\n" >> /boot/firmware/config.txt'
+sudo reboot          # required: config.txt change
+# [CHECK] after reboot:
+#   ls -l /dev/ttyAMA*        # expect /dev/ttyAMA4 for the BMS UART (GPIO 12/13)
+# If it enumerates as a different ttyAMA, run the bms node with BMS_PORT set,
+# e.g. export BMS_PORT=/dev/ttyAMA5
+# Free the port from a login console if one grabbed it:
+#   sudo systemctl disable --now serial-getty@ttyAMA4.service
+# [CHECK]:  ros2 run ros2_canbus bms   # prints 'SOC nn %  vv.vv V'
+
 
 # --- 12. Static IP -----------------------------------------------------------
 # The Android app hardcodes the Pi at 192.168.144.100, so the Pi MUST match.
