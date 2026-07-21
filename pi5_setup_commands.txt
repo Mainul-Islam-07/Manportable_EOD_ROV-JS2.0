@@ -171,6 +171,16 @@ sudo reboot          # required: config.txt change
 #   sudo systemctl disable --now serial-getty@ttyAMA4.service
 # [CHECK]:  ros2 run ros2_canbus bms   # prints 'SOC nn %  vv.vv V'
 
+# --- 11d. CAN passwordless sudo -- so robot_startup.sh can bring up CAN at boot -
+# robot_startup.sh runs as the user (systemd service, no TTY) and calls
+# `sudo can_bringup.sh`. Without a NOPASSWD rule that fails at boot ("a password
+# is required") and CAN never comes up. Grant NOPASSWD for just that script:
+echo "${USER} ALL=(root) NOPASSWD: ${HOME}/ros2_ws/src/necessary_codes/can_bringup.sh" \
+  | sudo tee /etc/sudoers.d/can_bringup
+sudo chmod 440 /etc/sudoers.d/can_bringup
+sudo visudo -c            # validate; must report the file "parsed OK"
+# [CHECK]:  sudo -n ${HOME}/ros2_ws/src/necessary_codes/can_bringup.sh  # no password prompt
+
 
 # --- 12. Static IP -----------------------------------------------------------
 # The Android app hardcodes the Pi at 192.168.144.100, so the Pi MUST match.

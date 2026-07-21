@@ -160,6 +160,17 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- Info: opens the SIYI MK32 manual (dialog_help.xml). Left of the 3D toggle. -->
+    <Button
+        android:id="@+id/btn_help"
+        style="@style/HudChip"
+        android:layout_marginEnd="8dp"
+        android:text="Info"
+        android:drawableStart="@drawable/ic_info"
+        android:drawablePadding="4dp"
+        app:layout_constraintBottom_toBottomOf="@id/btn_3d"
+        app:layout_constraintEnd_toStartOf="@id/btn_3d" />
+
     <!-- SIYI gimbal pan/tilt D-pad (bottom-right, above the 3D toggle; MAIN only).
          Hold an arrow to move, release to stop; center recenters. A8 mini at
          192.168.144.25:37260. -->

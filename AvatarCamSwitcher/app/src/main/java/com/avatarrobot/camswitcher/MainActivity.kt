@@ -1,6 +1,7 @@
 package com.avatarrobot.camswitcher
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
@@ -17,6 +18,7 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
@@ -323,6 +325,7 @@ class MainActivity : AppCompatActivity() {
         wireGimbalButtons()
         btnRecord.setOnClickListener { toggleRecording() }
         btnFire.setOnClickListener { onFirePressed() }
+        findViewById<Button>(R.id.btn_help).setOnClickListener { showManual() }
 
         cameraDropdown.setCurrent(currentFeed)
         updateMainOnlyControls(currentFeed)
@@ -692,6 +695,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCover() { cover.visibility = View.VISIBLE }
     private fun hideCover() { cover.visibility = View.GONE }
+
+    // Full-screen SIYI MK32 manual viewer (the "?" HUD button). Overlays the
+    // activity without pausing it, so the video keeps running behind. Back or ✕
+    // closes it.
+    private fun showManual() {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dialog.setContentView(R.layout.dialog_help)
+        dialog.window?.setLayout(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT)
+        dialog.findViewById<Button>(R.id.btn_help_close).setOnClickListener { dialog.dismiss() }
+        dialog.show()
+    }
 
     private fun showReconnecting() {
         txtStatus.text = "RECONNECTING ${currentFeed.label}…"
