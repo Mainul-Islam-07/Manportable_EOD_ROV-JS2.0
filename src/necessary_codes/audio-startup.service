@@ -1,0 +1,43 @@
+[Unit]
+Description=Manportable audio mic/speaker duplex link (MK32 intercom)
+#
+# This is a systemd USER unit -- install it to ~/.config/systemd/user/, NOT
+# /etc/systemd/system/.  That is not a style choice:
+#
+# As a SYSTEM service the script failed forever with
+#   paInvalidSampleRate / Invalid sample rate [PaErrorCode -9997]  (capture side)
+# while the exact same command worked by hand. A system unit has no user audio
+# session -- XDG_RUNTIME_DIR is unset and there is no PulseAudio/PipeWire socket
+# -- so ALSA's "default" PCM degrades to a raw hw: node with no rate conversion,
+# and the device's native 48 kHz cannot satisfy the script's 16 kHz request.
+# Inside the user session PulseAudio resamples transparently and 16 kHz opens.
+#
+# Requires `loginctl enable-linger <user>` so the user manager (and its
+# PulseAudio) also starts at boot with nobody logged in. See pi5_setup_commands.txt.
+#
+# Deliberately independent of robot-startup.service: audio must not be able to
+# take the robot stack down, or be taken down by it.
+After=sound.target pulseaudio.service
+Wants=pulseaudio.service
+
+[Service]
+Type=simple
+# No User=/Environment=HOME= here: the user manager already provides both, and
+# overriding them is what breaks session ownership of the audio device.
+WorkingDirectory=/home/jontro_soinik_2_0-2/manportable_audio_venv
+
+ExecStart=/home/jontro_soinik_2_0-2/ros2_ws/src/necessary_codes/audio_startup.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=audio-startup
+
+# Always come back: the intercom should recover on its own from a crash, a
+# PortAudio device error, or the USB mic being unplugged and replugged.
+Restart=always
+RestartSec=5
+TimeoutStartSec=0
+KillMode=mixed
+
+[Install]
+# default.target is the user-session equivalent of multi-user.target.
+WantedBy=default.target

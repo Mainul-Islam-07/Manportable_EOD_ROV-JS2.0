@@ -1,0 +1,14 @@
+sudo systemctl disable --now audio-startup
+sudo rm -f /etc/systemd/system/audio-startup.service
+sudo systemctl daemon-reload
+
+# 2. the load-bearing line — user session (and PulseAudio) at boot without a login
+sudo loginctl enable-linger $USER
+
+# 3. install as a user unit
+mkdir -p ~/.config/systemd/user
+cp ~/ros2_ws/src/necessary_codes/audio-startup.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now audio-startup
+
+journalctl --user -u audio-startup -f

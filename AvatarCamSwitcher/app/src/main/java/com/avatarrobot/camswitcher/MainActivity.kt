@@ -74,6 +74,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnZoom: Button
     private lateinit var btnSound: Button       // master intercom on/off
     private lateinit var btnTalk: Button         // hold-to-talk (momentary)
+    private lateinit var btnMic: Button          // mic-source dropdown anchor
+
     private lateinit var cameraDropdown: HudDropdown<CameraFeed>
     private lateinit var zoomDropdown: HudDropdown<Int>
 
@@ -229,6 +231,7 @@ class MainActivity : AppCompatActivity() {
         btnZoom       = findViewById(R.id.btn_zoom)
         btnSound      = findViewById(R.id.btn_sound)
         btnTalk       = findViewById(R.id.btn_talk)
+        btnMic        = findViewById(R.id.btn_mic)
         btnFire       = findViewById(R.id.btn_fire)
         txtMode       = findViewById(R.id.txt_mode)
         gimbalPanel   = findViewById(R.id.gimbal_panel)
@@ -318,8 +321,12 @@ class MainActivity : AppCompatActivity() {
         audioLink.onMicFailed = {
             talking = false
             applyAudio()
-            Toast.makeText(this, "Couldn't start microphone", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No external mic — check it's plugged in", Toast.LENGTH_SHORT).show()
         }
+        // Capture is external-mic-only, so the chip is a live availability indicator
+        // rather than a selector: green MIC USB when one is plugged in, red MIC NONE when
+        // not (in which case TALK will refuse rather than use the MK32's internal mic).
+        audioLink.onMicPresenceChanged = { present -> showMicPresence(present) }
         btnSound.setOnClickListener { toggleSound() }
         wireTalkButton()
         wireGimbalButtons()
@@ -360,6 +367,14 @@ class MainActivity : AppCompatActivity() {
             dropUp = true,
         ) { factor -> applyZoom(factor) }
         zoomDropdown.setCurrent(mainZoom)
+
+    }
+
+    // External-mic availability chip, updated live as the USB mic is plugged/unplugged.
+    private fun showMicPresence(present: Boolean) {
+        btnMic.text = if (present) "MIC USB" else "MIC NONE"
+        btnMic.backgroundTintList = ColorStateList.valueOf(
+            if (present) Color.parseColor("#2E7D32") else Color.parseColor("#D32F2F"))
     }
 
     // Battery chip (grey pill; red under 15%; "--" when unknown).
@@ -410,6 +425,7 @@ class MainActivity : AppCompatActivity() {
     //   on + !hold -> speaker on + mic off    (LISTEN: Pi mic -> here)
     private fun applyAudio() {
         btnTalk.visibility = if (soundOn) View.VISIBLE else View.GONE
+        btnMic.visibility = if (soundOn) View.VISIBLE else View.GONE
         btnSound.text = if (soundOn) "SOUND ON" else "SOUND"
         btnSound.backgroundTintList = ColorStateList.valueOf(
             if (soundOn) Color.parseColor("#2E7D32") else Color.parseColor("#9E9E9E"))

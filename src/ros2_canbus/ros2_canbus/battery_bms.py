@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""JK-BD BMS reader — Pi 5 hardware UART (GPIO 12/13). Polls every 2 s, prints SOC
-and pack V, and publishes them on ROS so telemetry_udp_bridge forwards the real
-battery % (SOC) to the app instead of a motor-voltage estimate.
+"""JK-BD BMS reader — Pi 5 hardware UART (GPIO 12/13). Polls every 2 s and publishes
+SOC and pack V on ROS so telemetry_udp_bridge forwards the real battery % (SOC) to
+the app instead of a motor-voltage estimate.
+
+Runs silently: readings are published, not printed, because this node is launched
+from bringup_sequence.launch.py and its stdout would otherwise flood
+robot_startup_logs/02_bringup_launch.log. Only genuine faults go to stderr.
 
 Wiring: BMS TX -> Pi GPIO13 (RXD), BMS RX -> Pi GPIO12 (TXD), GND common, 3.3 V.
 GPIO 12/13 on the Pi 5 is `dtoverlay=uart4-pi5` -> /dev/ttyAMA4 (see
@@ -182,7 +186,6 @@ def main(args=None):
               'device.', file=sys.stderr)
         sys.exit(1)
 
-    print(f'Polling {port} every {INTERVAL:g}s. Ctrl-C to stop.\n')
     fails = 0
 
     # ROS: publish SOC (%) and pack voltage so telemetry_udp_bridge forwards the
@@ -210,18 +213,18 @@ def main(args=None):
                     print(f'serial error: {e}', file=sys.stderr)
                     data = {}
 
-                ts = time.strftime('%H:%M:%S')
                 if 'soc_pct' in data and 'pack_v' in data:
                     fails = 0
-                    print(f'{ts}  SOC {data["soc_pct"]:3d} %   {data["pack_v"]:6.2f} V')
                     pub_soc.publish(UInt8(data=int(max(0, min(100, data["soc_pct"])))))
                     pub_v.publish(Float32(data=float(data["pack_v"])))
                 else:
                     fails += 1
-                    print(f'{ts}  no data ({fails})')
+                    # Warn once, not every poll: a silent BMS must still be visible
+                    # without spamming the launch log.
                     if fails == 5:
-                        print('  -> BMS TX to Pi GPIO13 (RXD), BMS RX to Pi GPIO12 (TXD), '
-                              'GND common, 3.3 V logic.', file=sys.stderr)
+                        print('battery_bms: no data after 5 polls -> BMS TX to Pi GPIO13 '
+                              '(RXD), BMS RX to Pi GPIO12 (TXD), GND common, 3.3 V logic.',
+                              file=sys.stderr)
 
                 sleep = INTERVAL - (time.monotonic() - t0)
                 if sleep > 0:
@@ -230,8 +233,6 @@ def main(args=None):
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-
-    print('\nStopped.')
 
 
 if __name__ == '__main__':

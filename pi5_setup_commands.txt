@@ -182,6 +182,71 @@ sudo visudo -c            # validate; must report the file "parsed OK"
 # [CHECK]:  sudo -n ${HOME}/ros2_ws/src/necessary_codes/can_bringup.sh  # no password prompt
 
 
+# --- 11e. Audio intercom service (USER service, separate from robot-startup) --
+# audio_mic_duplex.py lives in the venv directory itself (~/manportable_audio_venv,
+# venv at ~/manportable_audio_venv/venv). It runs from its OWN unit so an audio
+# failure cannot disturb the robot stack -- and so it can Restart=always.
+#
+# It MUST be a USER service, not a system one. As a system service PortAudio dies
+# with "Invalid sample rate [PaErrorCode -9997]" on capture, because a system unit
+# has no user audio session: XDG_RUNTIME_DIR is unset and there is no PulseAudio
+# socket, so ALSA's "default" becomes a raw hw: node that cannot resample the
+# device's native rate to the 16 kHz the script requests. Inside the user session
+# PulseAudio resamples transparently -- which is why running it by hand works.
+
+# Remove the system-level unit if a previous attempt installed one:
+sudo systemctl disable --now audio-startup 2>/dev/null
+sudo rm -f /etc/systemd/system/audio-startup.service
+sudo systemctl daemon-reload
+
+# THE LOAD-BEARING LINE: start the user manager (and its PulseAudio) at boot even
+# with nobody logged in. Without it audio only works after you SSH in.
+sudo loginctl enable-linger ${USER}
+
+chmod +x ${HOME}/ros2_ws/src/necessary_codes/audio_startup.sh
+mkdir -p ${HOME}/.config/systemd/user
+cp ${HOME}/ros2_ws/src/necessary_codes/audio-startup.service ${HOME}/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now audio-startup
+# NOTE: --user, and NO sudo, in every command below.
+# [CHECK]:  systemctl --user status audio-startup    # active (running)
+# [CHECK]:  journalctl --user -u audio-startup -f    # venv + script paths, no paInvalidSampleRate
+# [CHECK]:  pgrep -af audio_mic_duplex               # under manportable_audio_venv/venv/bin/python
+# [CHECK]:  loginctl show-user ${USER} | grep Linger # must say Linger=yes
+# [CHECK]:  reboot WITHOUT logging in -- audio must come up on its own.
+# Tune the pre-start wait (USB audio enumeration) without editing the script by
+# adding to the unit:  Environment=AUDIO_START_DELAY_SEC=20
+
+
+# --- 11f. Shell aliases for both services ------------------------------------
+# NOTE the asymmetry, it is not a typo: robot-startup is a SYSTEM unit (sudo, no
+# --user), audio-startup is a USER unit (--user, NEVER sudo). `sudo systemctl
+# --user ...` talks to ROOT's user manager and reports "Unit ... could not be
+# found", which is the single easiest way to waste time here.
+cat >> ~/.bashrc <<'EOF'
+
+# --- robot stack (SYSTEM service -> sudo) ---
+alias enable='sudo systemctl enable robot-startup.service'
+alias disable='sudo systemctl disable robot-startup.service'
+alias start='sudo systemctl start robot-startup.service'
+alias stop='sudo systemctl stop robot-startup.service'
+alias status='sudo systemctl status robot-startup.service'
+alias log='journalctl -u robot-startup.service -f'
+
+# --- audio intercom (USER service -> --user, NEVER sudo) ---
+alias aenable='systemctl --user enable audio-startup.service'
+alias adisable='systemctl --user disable audio-startup.service'
+alias astart='systemctl --user start audio-startup.service'
+alias astop='systemctl --user stop audio-startup.service'
+alias astatus='systemctl --user status audio-startup.service'
+alias alog='journalctl --user -u audio-startup.service -f'
+EOF
+source ~/.bashrc
+# [CHECK]:  astatus        # audio unit status; "could not be found" = sudo crept in
+# [CHECK]:  astop; astatus # inactive (dead) -- Restart=always does NOT undo an explicit stop
+# [CHECK]:  astart; alog   # back to active (running), then follow its journal
+
+
 # --- 12. Static IP -----------------------------------------------------------
 # The Android app hardcodes the Pi at 192.168.144.100, so the Pi MUST match.
 # No netplan config is committed. Edit /etc/netplan/*.yaml, then:

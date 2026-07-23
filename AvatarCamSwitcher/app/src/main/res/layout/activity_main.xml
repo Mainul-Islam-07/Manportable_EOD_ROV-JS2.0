@@ -148,6 +148,21 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintBottom_toTopOf="@id/btn_camera" />
 
+    <!-- External-mic status chip (bottom-left, right of TALK). Not a selector: capture is
+         USB-mic-only, so this shows availability — green "MIC USB" when the external mic
+         is plugged in, red "MIC NONE" when it isn't. Updated live on hot-plug; shown only
+         while sound is on, like TALK. -->
+    <Button
+        android:id="@+id/btn_mic"
+        style="@style/HudChip"
+        android:layout_marginStart="8dp"
+        android:text="MIC NONE"
+        android:visibility="gone"
+        tools:visibility="visible"
+        app:layout_constraintTop_toTopOf="@id/btn_talk"
+        app:layout_constraintBottom_toBottomOf="@id/btn_talk"
+        app:layout_constraintStart_toEndOf="@id/btn_talk" />
+
     <!-- 3D overlay toggle (bottom-right corner). Size + font match REC. The bottom
          margin lifts the whole bottom control cluster (camera/zoom/talk/gimbal all
          chain off this button) up from the edge. -->

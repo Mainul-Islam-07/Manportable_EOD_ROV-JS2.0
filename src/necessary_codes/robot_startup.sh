@@ -4,11 +4,16 @@
 # Launches the robot software stack in sequence.
 #
 # Sequence:
+#   0) boot grace                 (BOOT_GRACE_SEC; adapters + motor controllers)
 #   1) can_bringup.sh             (sudo, blocking; needs NOPASSWD sudoers)
+#                                 -> CAN_SETTLE_SEC
 #   2) bringup_sequence.launch.py (ros2 launch; internal staggering)
+#                                 -> ROSBAG_DELAY_SEC
 #   3) record_bags.sh             (rosbag; started after bringup topics are up)
 #
-# (audio + fake_memory_battery were removed.)
+# Audio is NOT here: audio_mic_duplex.py runs from its own audio-startup.service
+# (see audio_startup.sh) so an audio failure can't affect the robot stack.
+# (fake_memory_battery was removed.)
 # Edit these paths/sources if your workspace layout changes.
 # ---------------------------------------------------------------------------
 
@@ -26,9 +31,22 @@ NECESSARY_CODES_DIR="${HOME_DIR}/ros2_ws/src/necessary_codes"
 CAN_BRINGUP="${NECESSARY_CODES_DIR}/can_bringup.sh"
 RECORD_BAGS_SCRIPT="${NECESSARY_CODES_DIR}/record_bags.sh"
 
-# Seconds to wait after launching bringup before starting rosbag, so the
-# staggered nodes (~8 x 3 s) have created their topics first.
-BRINGUP_SETTLE_SEC="${BRINGUP_SETTLE_SEC:-25}"
+# Seconds to wait BEFORE touching any hardware. At boot the Pi is ready long
+# before the rest of the robot is: the USB CAN adapters are still enumerating and
+# the motor controllers are not powered/heartbeating yet, which produced
+# "Cannot find device can_arm" and "[BRINGUP-FAULT] Drive fault (Left_Drive|
+# heartbeat lost)" -> "[BRINGUP-FATAL] Cannot operate safely. Terminating."
+# A manual restart always worked because by then everything had settled.
+# Raise this if a drive/arm heartbeat fault still shows up on a cold boot.
+BOOT_GRACE_SEC="${BOOT_GRACE_SEC:-25}"
+
+# Seconds to wait after CAN is up before launching bringup, so the buses are
+# settled and the motor controllers are answering before any node talks to them.
+CAN_SETTLE_SEC="${CAN_SETTLE_SEC:-25}"
+
+# Seconds to wait after the bringup launch before starting rosbag, so the
+# staggered bringup nodes (~8 x 3 s) have all created their topics first.
+ROSBAG_DELAY_SEC="${ROSBAG_DELAY_SEC:-40}"
 
 LOG_DIR="${HOME_DIR}/robot_startup_logs"
 mkdir -p "${LOG_DIR}"
@@ -73,6 +91,11 @@ trap cleanup SIGTERM SIGINT
 
 # ---- Sequence -------------------------------------------------------------
 
+# 0) Let the rest of the robot catch up with the Pi (USB CAN enumeration, motor
+#    controllers powering up). See BOOT_GRACE_SEC above.
+echo "[$(date '+%F %T')] boot grace: waiting ${BOOT_GRACE_SEC}s for CAN adapters + motor controllers..."
+sleep "${BOOT_GRACE_SEC}"
+
 # 1) CAN bring-up (needs root). Under systemd there is no TTY to type a password,
 #    so this requires a passwordless sudoers rule for can_bringup.sh
 #    (see pi5_setup_commands.txt). Blocking; the script itself waits/retries.
@@ -89,15 +112,16 @@ fi
 # Log resulting link state to the journal for quick diagnosis.
 ip -brief link show can_drive 2>&1 | head -1
 ip -brief link show can_arm   2>&1 | head -1
-sleep 2
+echo "[$(date '+%F %T')] waiting ${CAN_SETTLE_SEC}s for the CAN buses to settle before bringup..."
+sleep "${CAN_SETTLE_SEC}"
 
 # 2) Main bringup sequence launch (handles its own internal staggering for
 #    sim_headless/sbus/robot/light/fire/mode/diagnostics/bms/coordinator).
 run_bg "02_bringup_launch" ros2 launch ros2_canbus bringup_sequence.launch.py
 
 # 3) rosbag recording — start only after the bringup topics are up.
-echo "[$(date '+%F %T')] waiting ${BRINGUP_SETTLE_SEC}s for bringup topics before rosbag..."
-sleep "${BRINGUP_SETTLE_SEC}"
+echo "[$(date '+%F %T')] waiting ${ROSBAG_DELAY_SEC}s for bringup topics before rosbag..."
+sleep "${ROSBAG_DELAY_SEC}"
 run_bg "03_record_bags" "${RECORD_BAGS_SCRIPT}"
 
 echo "[$(date '+%F %T')] full stack launched."
