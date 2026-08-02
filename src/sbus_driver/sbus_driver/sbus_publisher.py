@@ -21,8 +21,8 @@ Channel map
   CH10 – front_flipper     (3-state: -1/0/+1)
   CH11 – telescope_cmd     (3-state: -1/0/+1)
   CH12 – ee_pitch          (3-state: -1/0/+1 delta, coordinator accumulates)
-  CH13 – light_state       (TOGGLE: rising edge flips 0↔1)
-  CH14 – camera_axis       (TOGGLE: rising edge flips 0↔1, 0=pan 1=tilt)
+  CH13 – light_state       (LEVEL: switch up=on(1)  down=off(0))
+  CH14 – camera_axis       (LEVEL: switch up=tilt(1)  down=pan(0))
   CH15 – claw_cmd          (scroll: -100.0 to +100.0)
   CH16 – camera_cmd        (3-state: -1/0/+1)
 
@@ -51,8 +51,8 @@ Message field conventions (see sbus_interfaces/msg/SbusControl.msg):
   claw_cmd       : float64 -100.0 to +100.0 (scroll wheel)
   telescope_cmd  : int8    RETRACT=-1  HOLD=0  EXTEND=+1
   flippers       : int8    always active, -1/0/+1
-  light_state    : uint8   0=off  1=on (TOGGLED)
-  camera_axis    : uint8   0=pan  1=tilt (TOGGLED)
+  light_state    : uint8   0=off  1=on (follows CH13 switch)
+  camera_axis    : uint8   0=pan  1=tilt (follows CH14 switch)
   camera_cmd     : int8    -1/0/+1 (command for selected axis)
 """
 
@@ -254,19 +254,16 @@ class ChannelInterpreter:
 
     Persistent state held here:
       * claw_cmd      – held value of the scroll wheel
-      * light_state   – toggled ON/OFF by rising edge of CH13
-      * camera_axis   – toggled PAN/TILT by rising edge of CH14
+      * light_state   – ON/OFF, follows the CH13 maintained switch position
+      * camera_axis   – PAN/TILT, follows the CH14 maintained switch position
     """
 
     def __init__(self):
         self.claw_cmd: float = 0.0
-        # Toggle states — persist across ticks
+        # Follow the maintained CH13/CH14 switches; retained across ticks only so
+        # the DISARMED path (which zeros the OUTPUT) can resume the last position.
         self.light_state: int = 0      # 0=off, 1=on
         self.camera_axis: int = 0      # 0=pan, 1=tilt
-        # Previous raw 2-state switch positions for edge detection.
-        # -1 = uninitialized (first frame is baseline-only, never triggers a toggle)
-        self._prev_light_raw: int = -1
-        self._prev_camera_raw: int = -1
 
     # ── Main interpret ────────────────────────────────────────────────────────
 
@@ -313,18 +310,17 @@ class ChannelInterpreter:
             arm_x_cmd = arm_y_cmd = arm_z_cmd = 0
             self.claw_cmd = 0.0
 
-        # ── CH13: light_state — TOGGLE on rising edge of switch ────────────
-        light_raw = raw[13]
-        if self._prev_light_raw == 0 and light_raw == 1:
-            self.light_state ^= 1
-        self._prev_light_raw = light_raw
+        # ── CH13: light_state — LEVEL FOLLOW the maintained switch ─────────
+        # Switch position IS the state: up (raw 1) = on, down (raw 0) = off.
+        # (Was rising-edge toggle, which suited a momentary button; with a
+        # maintained switch that needed two flicks per change because the
+        # down-flick produced no edge.)
+        self.light_state = raw[13]
         light_state = self.light_state
 
-        # ── CH14: camera_axis — TOGGLE on rising edge of switch ────────────
-        camera_raw = raw[14]
-        if self._prev_camera_raw == 0 and camera_raw == 1:
-            self.camera_axis ^= 1
-        self._prev_camera_raw = camera_raw
+        # ── CH14: camera_axis — LEVEL FOLLOW the maintained switch ─────────
+        # up (raw 1) = tilt, down (raw 0) = pan.
+        self.camera_axis = raw[14]
         camera_axis = self.camera_axis
 
         # ── Always-active fields ─────────────────────────────────────────────
