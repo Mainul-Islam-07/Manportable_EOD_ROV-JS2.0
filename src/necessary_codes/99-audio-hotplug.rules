@@ -1,0 +1,13 @@
+# 99-audio-hotplug.rules
+# Restart the audio intercom (user) service when a USB sound card appears, so a
+# fresh process opens the now-present device instead of waiting ~1 min for the
+# running one to re-scan. Install to /etc/udev/rules.d/ (see pi5_setup_commands.txt).
+#
+# Match ONLY the card node of a USB sound device:
+#   SUBSYSTEM=="sound"           -> the ALSA sound class
+#   KERNEL=="card[0-9]*"         -> the card itself, not its controlC*/pcmC* subnodes
+#                                   (avoids firing several times for one plug-in)
+#   SUBSYSTEMS=="usb"            -> only USB cards, never the built-in one
+#
+# The helper lives at a fixed path so this rule has no dependency on any home dir.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card[0-9]*", SUBSYSTEMS=="usb", RUN+="/usr/local/bin/audio_hotplug_restart.sh"

@@ -218,6 +218,25 @@ systemctl --user enable --now audio-startup
 # adding to the unit:  Environment=AUDIO_START_DELAY_SEC=20
 
 
+# --- 11g. Restart audio on USB-audio hot-plug (optional, faster recovery) -----
+# If the mic/speaker is plugged in AFTER boot, the already-running audio process
+# only recovers once PulseAudio promotes the new card to default (~1 min). This
+# udev rule restarts the (user) service the moment a USB sound card appears, so a
+# fresh process grabs it in a few seconds. The helper lives at a FIXED path so the
+# rule needs no home dir, and it restarts the unit for whichever lingering user
+# owns it (works regardless of the account name).
+sudo cp ${HOME}/ros2_ws/src/necessary_codes/audio_hotplug_restart.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/audio_hotplug_restart.sh
+sudo cp ${HOME}/ros2_ws/src/necessary_codes/99-audio-hotplug.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=sound
+# [CHECK]:  udevadm test $(udevadm info -q path -n /dev/snd/controlC1) 2>&1 | grep audio_hotplug
+#           (plug the USB card in first; controlC1 is usually the USB card)
+# [CHECK]:  plug the mic/speaker in with the robot already running -> within a few
+#           seconds:  journalctl --user -u audio-startup -f  shows a fresh start.
+# To remove:  sudo rm /etc/udev/rules.d/99-audio-hotplug.rules /usr/local/bin/audio_hotplug_restart.sh; sudo udevadm control --reload-rules
+
+
 # --- 11f. Shell aliases for both services ------------------------------------
 # NOTE the asymmetry, it is not a typo: robot-startup is a SYSTEM unit (sudo, no
 # --user), audio-startup is a USER unit (--user, NEVER sudo). `sudo systemctl
