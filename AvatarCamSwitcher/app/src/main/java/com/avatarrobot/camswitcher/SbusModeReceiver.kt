@@ -13,7 +13,7 @@ import kotlin.concurrent.thread
  * `sbus_mode_udp_bridge.py` as compact JSON to UDP **:9871** at ~5 Hz, e.g.
  * `{"seq":12,"mode":"DRIVE","control_mode":2,"operation_mode":0,"rx_age_ms":40}`.
  *
- * Only the `mode` string is consumed here (DISARM | HOME | ARM | DRIVE); it is
+ * Only the `mode` string is consumed here (DISARM | STAIR | HOME | ARM | DRIVE); it is
  * shown beside the FIRING button. This is a SEPARATE port from the 9870 telemetry
  * receiver, so the two sockets never conflict. Same coexistence convention:
  * started in onResume, stopped in onPause, SO_REUSEADDR + bind retry to ride out

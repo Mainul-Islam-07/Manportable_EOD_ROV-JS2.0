@@ -504,12 +504,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     // -- SBUS mode chip (right of FIRING) -------------------------------------
-    // DISARM is red (safe/disarmed stands out); ARM/HOME/DRIVE are green (armed).
+    // DISARM is red (safe/disarmed stands out); STAIR is amber (armed, but a
+    // distinct operating mode); ARM/HOME/DRIVE are green (armed, normal).
     // Each packet reschedules the stale fallback so a dropped feed shows "—".
     private fun updateMode(mode: String) {
         mainHandler.removeCallbacks(modeStaleRunnable)
         txtMode.text = mode
-        val color = if (mode == "DISARM") "#D32F2F" else "#2E7D32"
+        val color = when (mode) {
+            "DISARM" -> "#D32F2F"   // red   — safe/disarmed stands out
+            "STAIR"  -> "#F57C00"   // amber — stair mode, armed but distinct
+            else     -> "#2E7D32"   // green — ARM / HOME / DRIVE
+        }
         txtMode.backgroundTintList = ColorStateList.valueOf(Color.parseColor(color))
         mainHandler.postDelayed(modeStaleRunnable, MODE_STALE_MS)
     }

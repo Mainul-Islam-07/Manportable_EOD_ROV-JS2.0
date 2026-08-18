@@ -96,9 +96,9 @@
         app:layout_constraintBottom_toBottomOf="@id/btn_record"
         app:layout_constraintStart_toEndOf="@id/btn_sound" />
 
-    <!-- SBUS mode (right of FIRING): DISARM/HOME/ARM/DRIVE from the Pi's
-         sbus_mode_udp_bridge on UDP :9871. Text + tint driven in code; "—" when
-         no feed. -->
+    <!-- SBUS mode (right of FIRING): DISARM/STAIR/HOME/ARM/DRIVE from the Pi's
+         sbus_mode_udp_bridge on UDP :9871. Text + tint driven in code (red
+         DISARM, amber STAIR, green otherwise); "—" when no feed. -->
     <TextView
         android:id="@+id/txt_mode"
         style="@style/HudInfo"

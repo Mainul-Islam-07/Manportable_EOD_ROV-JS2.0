@@ -8,24 +8,31 @@ UDP-publishes the single *current mode* as a compact JSON datagram for an app
 
 Mode logic (see sbus_interfaces/msg/SbusControl.msg)
 ---------------------------------------------------
-``operation_mode``  ARMED=0  FIRING=1  DISARMED=2
-``control_mode``    ARM=0    HOME=1    DRIVE=2
+``operation_mode``  ARMED=0  STAIR=1  DISARMED=2
+``control_mode``    ARM=0    HOME=1   DRIVE=2
 
   * **DISARMED**  -> mode = ``"DISARM"``  (overrides everything, fail-safe)
+  * **STAIR**     -> mode = ``"STAIR"``   (operator selected Stair Mode on CH2)
   * **ARMED**     -> mode = the current ``control_mode``: ``"HOME"`` / ``"ARM"``
                      / ``"DRIVE"``
-  * **FIRING**    -> *no state change* — the last published mode is held
-                     (firing does not change which mode we report)
 
-Until the first ARMED/DISARMED message arrives the mode defaults to ``DISARM``
-(the safe assumption).
+.. note::
+   ``operation_mode == 1`` is **Stair Mode**.  The constant in SbusControl.msg
+   is still named ``OPERATION_MODE_FIRING`` — renaming it would force a rebuild
+   of ``sbus_interfaces`` and every node that imports it, so the stale name is
+   kept and the meaning is documented here instead.  The coordinator's own
+   FIRING state is a different feature entirely and is driven by ``/fire_mode``,
+   not by this field.
+
+Until the first message arrives the mode defaults to ``DISARM`` (the safe
+assumption).
 
 Output (UDP JSON, sent at ``rate_hz`` to ``dest_ip:dest_port``)::
 
     {"seq":12,"stamp":1719500000.12,"mode":"DRIVE",
      "control_mode":2,"operation_mode":0,"rx_age_ms":40}
 
-  * ``mode``           : "DISARM" | "HOME" | "ARM" | "DRIVE"
+  * ``mode``           : "DISARM" | "STAIR" | "HOME" | "ARM" | "DRIVE"
   * ``control_mode``   : last raw control_mode int (or null before first msg)
   * ``operation_mode`` : last raw operation_mode int (or null before first msg)
   * ``rx_age_ms``      : ms since the last /sbus/control message (-1 if none yet)
@@ -96,18 +103,25 @@ class SbusModeUdpBridge(Node):
     # ----------------------------------------------------------------- sbus rx
 
     def _on_sbus(self, msg: SbusControl):
-        """Update the held mode. DISARMED wins; ARMED maps control_mode;
-        FIRING is ignored (no state change)."""
+        """Update the held mode. DISARMED wins; STAIR reports itself; ARMED
+        maps control_mode."""
         self._control_mode = int(msg.control_mode)
         self._operation_mode = int(msg.operation_mode)
         self._last_rx = time.monotonic()
 
         if msg.operation_mode == SbusControl.OPERATION_MODE_DISARMED:
             self._mode = "DISARM"
+        elif msg.operation_mode == SbusControl.OPERATION_MODE_FIRING:
+            # Value 1 is Stair Mode.  The .msg constant is still named
+            # OPERATION_MODE_FIRING for interface compatibility — renaming it
+            # would force a rebuild of sbus_interfaces and every node importing
+            # it.  The coordinator's own FIRING state is unrelated and comes
+            # from /fire_mode.
+            self._mode = "STAIR"
         elif msg.operation_mode == SbusControl.OPERATION_MODE_ARMED:
             # Unknown control_mode value -> hold last (defensive; shouldn't happen).
             self._mode = _CONTROL_TO_MODE.get(msg.control_mode, self._mode)
-        # OPERATION_MODE_FIRING (and any other value): leave self._mode unchanged.
+        # Any other value: leave self._mode unchanged.
 
     # ------------------------------------------------------------- publishing
 
