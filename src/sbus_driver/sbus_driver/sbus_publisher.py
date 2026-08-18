@@ -54,6 +54,16 @@ Message field conventions (see sbus_interfaces/msg/SbusControl.msg):
   light_state    : uint8   0=off  1=on (follows CH13 switch)
   camera_axis    : uint8   0=pan  1=tilt (follows CH14 switch)
   camera_cmd     : int8    -1/0/+1 (command for selected axis)
+
+light_state / camera_axis are exempt from all masking
+-----------------------------------------------------
+Every other command field is forced to 0 when DISARMED and in the link-lost
+safe state.  light_state and camera_axis are NOT: they follow their CH13/CH14
+switches in every mode, and the safe-state message carries the last-known
+values.  Neither field commands motion — camera_cmd is the actual camera
+motion command and is still zeroed — so masking them bought no safety, while
+losing the work lights on a disarm or a radio drop makes the robot harder to
+see and recover.
 """
 
 import time
@@ -260,8 +270,10 @@ class ChannelInterpreter:
 
     def __init__(self):
         self.claw_cmd: float = 0.0
-        # Follow the maintained CH13/CH14 switches; retained across ticks only so
-        # the DISARMED path (which zeros the OUTPUT) can resume the last position.
+        # Follow the maintained CH13/CH14 switches.  These are retained across
+        # ticks because SbusPublisher._publish_safe_state reads them: when the
+        # radio link drops there is no frame to derive them from, and the safe
+        # state must carry the last-known light/axis rather than zeroing them.
         self.light_state: int = 0      # 0=off, 1=on
         self.camera_axis: int = 0      # 0=pan, 1=tilt
 
@@ -373,13 +385,18 @@ class ChannelInterpreter:
                 camera_cmd      = camera_cmd,
             )
 
-        # ── DISARMED: zero ALL commands, preserve control_mode + operation_mode
-        # Note: this zeros the OUTPUT only. self.light_state, self.camera_axis,
-        # and self.claw_cmd internal toggle/held state are preserved across
-        # DISARMED periods, so re-arming resumes with the last-known UI state.
+        # ── DISARMED: zero every command except the exemptions below ───────
+        # Exempt: control_mode / operation_mode carry the operator's intent, and
+        # light_state / camera_axis are UI state rather than actuation — they
+        # keep following their CH13/CH14 switches while disarmed so a disarm
+        # doesn't kill the work lights or reset the camera selector.  camera_cmd
+        # (the actual camera motion command) IS still zeroed.
+        # Note: this zeros the OUTPUT only. self.claw_cmd internal held state is
+        # preserved across DISARMED periods.
         if op_mode == _OP_DISARMED:
             for key in result:
-                if key in ('operation_mode', 'control_mode'):
+                if key in ('operation_mode', 'control_mode',
+                           'light_state', 'camera_axis'):
                     continue
                 elif isinstance(result[key], float):
                     result[key] = 0.0
@@ -570,7 +587,8 @@ class SbusPublisher(Node):
 
     def _publish_safe_state(self, now_ns: int, reason: str) -> None:
         """
-        Publish an explicit DISARMED + zero-everything message.
+        Publish an explicit DISARMED message with every command zeroed,
+        except light_state / camera_axis which carry their last-known values.
 
         Called when the radio link is lost (failsafe flag, frame_lost flag,
         no frames within the timeout window, or decode/sanity failure).
@@ -594,6 +612,12 @@ class SbusPublisher(Node):
         msg.header.frame_id = 'sbus'
         msg.control_mode    = _MODE_ARM         # benign default
         msg.operation_mode  = _OP_DISARMED      # critical: gates everything off
+        # Light and camera axis survive the link loss — neither commands motion,
+        # and keeping the lights on makes the robot findable when the radio is
+        # gone. Both default to 0 in ChannelInterpreter.__init__, so before the
+        # first frame this still publishes lights-off / pan.
+        msg.light_state     = int(self._interp.light_state)
+        msg.camera_axis     = int(self._interp.camera_axis)
         # All other fields stay at their zero defaults from msg construction.
         self._pub.publish(msg)
 
