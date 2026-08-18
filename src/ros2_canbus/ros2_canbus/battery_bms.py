@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JK-BD BMS reader — Pi 5 hardware UART (GPIO 12/13). Polls every 2 s and publishes
+"""Rover pack voltage/SOC reader — ADS1115 ADC over I2C. Polls every 2 s and publishes
 SOC and pack V on ROS so telemetry_udp_bridge forwards the real battery % (SOC) to
 the app instead of a motor-voltage estimate.
 
@@ -7,147 +7,68 @@ Runs silently: readings are published, not printed, because this node is launche
 from bringup_sequence.launch.py and its stdout would otherwise flood
 robot_startup_logs/02_bringup_launch.log. Only genuine faults go to stderr.
 
-Wiring: BMS TX -> Pi GPIO13 (RXD), BMS RX -> Pi GPIO12 (TXD), GND common, 3.3 V.
-GPIO 12/13 on the Pi 5 is `dtoverlay=uart4-pi5` -> /dev/ttyAMA4 (see
-pi5_setup_commands.txt). Override with the BMS_PORT env var if it differs."""
+Wiring: pack+ -> 133k -> ADS1115 A0 -> 10k -> pack- (GND common with Pi). This divider
+scales the pack voltage down by a factor of ~14.3, so ADS1115 A0 sees pack_v / 14.3.
+ADS1115 ADDR tied to GND -> I2C address 0x48. VDD tied to Pi 5V rail (needed since
+divider output exceeds 3.3V). See pi5_setup_commands.txt for I2C bus setup.
+Override with ADC_ADDR / ADC_CHANNEL / ADC_AVG_N env vars if they differ.
+
+SOC is a linear estimate between the pack's expected empty (39.0 V) and full
+(53.3 V) resting voltages — there is no coulomb counting or cell-level data
+without the BMS, so this is a voltage-based approximation only."""
 
 import os
-import serial
-import struct
 import time
 import signal
 import sys
+
+import board
+import busio
+import adafruit_ads1x15.ads1115 as ADS
+from adafruit_ads1x15.analog_in import AnalogIn
 
 import rclpy
 from std_msgs.msg import UInt8, Float32
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
-# Serial device for the BMS. Default = Pi 5 GPIO 12/13 UART (dtoverlay=uart4-pi5
-# -> /dev/ttyAMA4). Override via env (e.g. BMS_PORT=/dev/ttyAMA5) if it differs.
-PORT = os.environ.get('BMS_PORT', '/dev/ttyAMA4')
+# ADS1115 config. Default = ADDR tied to GND -> 0x48, signal on A0.
+ADC_ADDR = int(os.environ.get('ADC_ADDR', '0x48'), 16)
+ADC_CHANNEL = int(os.environ.get('ADC_CHANNEL', '0'))  # 0..3 -> A0..A3
+ADC_AVG_N = int(os.environ.get('ADC_AVG_N', '10'))       # moving-average sample count
 
-BAUD = 115200
-INTERVAL = 2.0
-HEADER = b'\x4e\x57'
+INTERVAL = 1.0
 
-READ_ALL = bytes([
-    0x4E, 0x57, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00,
-    0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x68, 0x00, 0x00, 0x01, 0x29,
-])
+# Pack-voltage EMA (exponential moving average), persistent across polls - smooths
+# ADC/reference noise (scenario: SOC flickering 97/98% at idle) and softens
+# transient IR-drop sag under load without fully hiding real depletion trends.
+# Larger tau = smoother but slower to react to genuine voltage change.
+PACK_V_EMA_TAU_S = float(os.environ.get('PACK_V_EMA_TAU_S', '20.0'))
 
-FIXED = {
-    0x80: (2, 'mos_temp_c'),   0x81: (2, 'probe1_c'),
-    0x82: (2, 'probe2_c'),     0x83: (2, 'pack_v'),
-    0x84: (2, 'current_raw'),  0x85: (1, 'soc_pct'),
-    0x86: (1, 'n_probes'),     0x87: (2, 'cycles'),
-    0x89: (4, 'cycle_cap_ah'), 0x8A: (2, 'n_cells'),
-    0x8B: (2, 'warn_bits'),    0x8C: (2, 'status_bits'),
-}
+# Published-SOC debounce: only change the published integer % once the filtered
+# value has agreed with the new SOC for this many consecutive polls in a row.
+# Kills single-poll flicker across a rounding boundary (e.g. 97% <-> 98%).
+SOC_DEBOUNCE_POLLS = int(os.environ.get('SOC_DEBOUNCE_POLLS', '5'))
 
-WARN_BITS = {
-    0: 'low_cap', 1: 'mos_overtemp', 2: 'charge_overvolt', 3: 'discharge_undervolt',
-    4: 'probe_diff', 5: 'charge_overcurrent', 6: 'discharge_overcurrent',
-    7: 'cell_delta', 8: 'overtemp', 9: 'cell_overvolt', 10: 'cell_undervolt',
-    11: 'protection_309a', 12: 'protection_309b',
-}
+# Divider: 133k (top) + 10k (bottom), nominal ratio 14.3. Empirically calibrated
+# against a multimeter (pack 52.9V vs topic-implied ADC reading) gives 14.69 -
+# this folds in both resistor tolerance and the ADS1115's own reference error.
+# Re-measure and update if you change the divider resistors or swap the ADC.
+DIVIDER_RATIO = 14.69
 
+# SOC mapped linearly between these resting-voltage endpoints (13S pack).
+SOC_V_EMPTY = 39.0   # -> 0 %
+SOC_V_FULL = 53.3    # -> 100 %
 
-def checksum(data):
-    return sum(data) & 0xFFFF
+# P0-P3 are just 0-3 internally; using plain ints here avoids depending on
+# ADS.P0/P1/P2/P3 attribute names, which have moved between library versions.
+_ADC_CHANNELS = {0: 0, 1: 1, 2: 2, 3: 3}
 
 
-def find_frames(buf, verify=True):
-    frames = []
-    while True:
-        start = buf.find(HEADER)
-        if start < 0:
-            if len(buf) > 1:
-                del buf[:len(buf) - 1]
-            break
-        if start:
-            del buf[:start]
-        if len(buf) < 4:
-            break
-        length = struct.unpack('>H', buf[2:4])[0]
-        if not (20 < length < 600):
-            del buf[:2]
-            continue
-        total = 2 + length
-        if len(buf) < total:
-            break
-        frame = bytes(buf[:total])
-        del buf[:total]
-        if verify and checksum(frame[:-4]) != struct.unpack('>H', frame[-2:])[0]:
-            continue
-        frames.append(frame)
-    return frames
-
-
-def read_frame(ser, timeout=1.5):
-    buf = bytearray()
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        chunk = ser.read(512)
-        if chunk:
-            buf += chunk
-            got = find_frames(buf)
-            if got:
-                return got[0]
-        else:
-            time.sleep(0.01)
-    return None
-
-
-def _temp(raw):
-    return float(-(raw - 100)) if raw > 100 else float(raw)
-
-
-def parse(frame):
-    if not frame or len(frame) < 20:
-        return {}
-    p = frame[11:-9]
-    out, cells, i = {}, {}, 0
-    while i < len(p):
-        rid = p[i]
-        i += 1
-        try:
-            if rid == 0x79:
-                n = p[i]
-                i += 1
-                for k in range(0, n, 3):
-                    cells[p[i + k]] = struct.unpack('>H', p[i + k + 1:i + k + 3])[0] / 1000.0
-                i += n
-            elif rid in FIXED:
-                width, key = FIXED[rid]
-                out[key] = int.from_bytes(p[i:i + width], 'big')
-                i += width
-            else:
-                break
-        except (IndexError, struct.error):
-            break
-
-    for k in ('mos_temp_c', 'probe1_c', 'probe2_c'):
-        if k in out:
-            out[k] = _temp(out[k])
-    if 'pack_v' in out:
-        out['pack_v'] /= 100.0
-    if 'cycle_cap_ah' in out:
-        out['cycle_cap_ah'] /= 1000.0
-    if 'current_raw' in out:
-        raw = out.pop('current_raw')
-        out['current_a'] = ((raw & 0x7FFF) / 100.0) * (1 if raw & 0x8000 else -1)
-    if 'warn_bits' in out:
-        out['warnings'] = [n for b, n in WARN_BITS.items() if out['warn_bits'] & (1 << b)]
-    if cells:
-        vs = list(cells.values())
-        out['cells_v'] = cells
-        out['cell_min_v'] = min(vs)
-        out['cell_max_v'] = max(vs)
-        out['cell_delta_v'] = round(max(vs) - min(vs), 3)
-    if 'pack_v' in out and 'current_a' in out:
-        out['power_w'] = round(out['pack_v'] * out['current_a'], 1)
-    return out
+def voltage_to_soc(pack_v):
+    if SOC_V_FULL == SOC_V_EMPTY:
+        return 0
+    frac = (pack_v - SOC_V_EMPTY) / (SOC_V_FULL - SOC_V_EMPTY)
+    return int(round(max(0.0, min(1.0, frac)) * 100))
 
 
 running = True
@@ -158,35 +79,50 @@ def stop(signum, frm):
     running = False
 
 
-def open_port(port):
-    ser = serial.Serial(port, BAUD, timeout=0.2)
-    # RTS/DTR are modem-control lines an FTDI has but a raw Pi UART does not, so
-    # setting them can raise on /dev/ttyAMA* — best-effort, ignore failures.
-    try:
-        ser.setRTS(False)
-        ser.setDTR(False)
-    except Exception:
-        pass
-    time.sleep(0.1)
-    ser.reset_input_buffer()
-    return ser
+def open_adc():
+    i2c = busio.I2C(board.SCL, board.SDA)
+    ads = ADS.ADS1115(i2c, address=ADC_ADDR)
+    if ADC_CHANNEL not in _ADC_CHANNELS:
+        raise ValueError(f'ADC_CHANNEL must be 0-3, got {ADC_CHANNEL}')
+    chan = AnalogIn(ads, _ADC_CHANNELS[ADC_CHANNEL])
+    return chan
+
+
+def read_pack_v(chan, n):
+    """Average n raw ADC voltage samples, then undo the divider."""
+    total = 0.0
+    got = 0
+    for _ in range(n):
+        try:
+            total += chan.voltage
+            got += 1
+        except OSError:
+            # transient I2C hiccup on one sample - skip it, don't kill the poll
+            continue
+    if got == 0:
+        raise OSError('no successful ADC samples')
+    return (total / got) * DIVIDER_RATIO
 
 
 def main(args=None):
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
-    port = PORT
     try:
-        ser = open_port(port)
-    except serial.SerialException as e:
-        print(f'Cannot open {port}: {e}', file=sys.stderr)
-        print('Enable the UART (dtoverlay=uart4-pi5 -> /dev/ttyAMA4), free it from any '
-              'serial-getty, add the user to dialout, or set BMS_PORT to the right '
-              'device.', file=sys.stderr)
+        chan = open_adc()
+    except (ValueError, OSError, RuntimeError) as e:
+        print(f'Cannot open ADS1115 (addr={hex(ADC_ADDR)}): {e}', file=sys.stderr)
+        print('Check I2C is enabled, wiring to SDA/SCL, ADDR pin strapping, and '
+              'ADC_ADDR/ADC_CHANNEL env vars.', file=sys.stderr)
         sys.exit(1)
 
     fails = 0
+    filtered_v = None          # persistent EMA state across polls
+    published_soc = None       # last SOC actually published
+    pending_soc = None         # candidate SOC waiting to be confirmed
+    pending_count = 0          # consecutive polls pending_soc has held
+    # EMA smoothing factor from time constant: alpha = INTERVAL / (tau + INTERVAL)
+    ema_alpha = INTERVAL / (PACK_V_EMA_TAU_S + INTERVAL)
 
     # ROS: publish SOC (%) and pack voltage so telemetry_udp_bridge forwards the
     # real battery percentage to the app. Latched so a late subscriber gets the
@@ -201,34 +137,54 @@ def main(args=None):
     pub_v   = node.create_publisher(Float32, '/battery_pack_v', latched)
 
     try:
-        with ser:
-            while running and rclpy.ok():
-                t0 = time.monotonic()
-                try:
-                    ser.reset_input_buffer()
-                    ser.write(READ_ALL)
-                    ser.flush()
-                    data = parse(read_frame(ser))
-                except serial.SerialException as e:
-                    print(f'serial error: {e}', file=sys.stderr)
-                    data = {}
+        while running and rclpy.ok():
+            t0 = time.monotonic()
+            try:
+                pack_v = read_pack_v(chan, ADC_AVG_N)
+                data_ok = True
+            except OSError as e:
+                print(f'ADC read error: {e}', file=sys.stderr)
+                data_ok = False
 
-                if 'soc_pct' in data and 'pack_v' in data:
-                    fails = 0
-                    pub_soc.publish(UInt8(data=int(max(0, min(100, data["soc_pct"])))))
-                    pub_v.publish(Float32(data=float(data["pack_v"])))
+            if data_ok:
+                fails = 0
+                filtered_v = pack_v if filtered_v is None else (
+                    ema_alpha * pack_v + (1 - ema_alpha) * filtered_v)
+                candidate_soc = voltage_to_soc(filtered_v)
+
+                if published_soc is None:
+                    # First good reading: publish immediately, no need to debounce.
+                    published_soc = candidate_soc
+                    pending_soc = candidate_soc
+                    pending_count = 0
+                elif candidate_soc == published_soc:
+                    # Matches what's already published - nothing pending.
+                    pending_soc = candidate_soc
+                    pending_count = 0
                 else:
-                    fails += 1
-                    # Warn once, not every poll: a silent BMS must still be visible
-                    # without spamming the launch log.
-                    if fails == 5:
-                        print('battery_bms: no data after 5 polls -> BMS TX to Pi GPIO13 '
-                              '(RXD), BMS RX to Pi GPIO12 (TXD), GND common, 3.3 V logic.',
-                              file=sys.stderr)
+                    if candidate_soc == pending_soc:
+                        pending_count += 1
+                    else:
+                        pending_soc = candidate_soc
+                        pending_count = 1
+                    if pending_count >= SOC_DEBOUNCE_POLLS:
+                        published_soc = pending_soc
+                        pending_count = 0
 
-                sleep = INTERVAL - (time.monotonic() - t0)
-                if sleep > 0:
-                    time.sleep(sleep)
+                pub_soc.publish(UInt8(data=published_soc))
+                pub_v.publish(Float32(data=float(filtered_v)))
+            else:
+                fails += 1
+                # Warn once, not every poll: a silent ADC must still be visible
+                # without spamming the launch log.
+                if fails == 5:
+                    print('battery_bms: no data after 5 polls -> check ADS1115 wiring '
+                          '(A0/GND/VDD/SDA/SCL), ADDR strapping, and I2C bus.',
+                          file=sys.stderr)
+
+            sleep = INTERVAL - (time.monotonic() - t0)
+            if sleep > 0:
+                time.sleep(sleep)
     finally:
         node.destroy_node()
         if rclpy.ok():
