@@ -90,6 +90,15 @@ class Controlword_Setup():
 
     def ARM(self):
         try:
+            # Clear any LATCHED fault first. In CiA-402 a drive in the FAULT
+            # state ignores Shutdown/Switch-On/Enable-Operation entirely — the
+            # only exit is a rising edge of the fault-reset bit. Without this,
+            # a motor that faulted (over-current on a hard reversal, dropped
+            # controlword PDO, brief supply sag) stays braked and silently
+            # refuses to run until the next DISARM. RESET_FAULT (bit 7) then
+            # SHUT_DOWN (bit 7 low) makes that edge; it is benign when no fault
+            # is present. Same pattern DISARM() already uses.
+            self.CONTROLWORD(Avatarrobot_CANopen_Map.ControlWord.RESET_FAULT)
             self.CONTROLWORD(Avatarrobot_CANopen_Map.ControlWord.SHUT_DOWN)
             self.CONTROLWORD(Avatarrobot_CANopen_Map.ControlWord.SWITCH_ON)
             self.CONTROLWORD_HALT()

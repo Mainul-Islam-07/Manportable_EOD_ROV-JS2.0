@@ -55,8 +55,8 @@ from std_msgs.msg import Bool, Float32
 # ============================ CONFIG (defaults) ============================
 
 # Tunable low-voltage cutoff.  A memory cell at or below this is "low" and its
-# bus gets disarmed.  ~3.3 V on a 3.6 V encoder backup cell.  Edit here.
-LOW_VOLTAGE_THRESHOLD_MV = 3300
+# bus gets disarmed.  ~3.0 V on a 3.6 V encoder backup cell.  Edit here.
+LOW_VOLTAGE_THRESHOLD_MV = 3000
 
 # UDP socket the STM32 sends battery readings to.
 LISTEN_HOST = "0.0.0.0"
@@ -166,7 +166,7 @@ class BatteryMonitor(Node):
                 self._bat1_mv = bat1_mv
                 self._bat2_mv = bat2_mv
                 self._last_rx = time.monotonic()
-            self.get_logger().info(
+            self.get_logger().debug(
                 f"BAT1(drive)={bat1_mv} mV  BAT2(arm)={bat2_mv} mV")
 
     # ------------------------------------------------------- startup-gate API

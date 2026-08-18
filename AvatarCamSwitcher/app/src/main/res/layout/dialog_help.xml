@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Full-screen SIYI MK32 manual viewer, shown by MainActivity.showManual() when the
+  HUD "?" button is tapped. Three manual pages stacked in a vertical scroll; the ✕
+  chip (or Back) closes it. layerType=software guarantees the wide (2056 px) page
+  renders on GPUs capped at 2048 texture size.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#EE000000">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:padding="8dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="10dp"
+                android:adjustViewBounds="true"
+                android:scaleType="fitCenter"
+                android:layerType="software"
+                android:contentDescription="SIYI MK32 manual page 1"
+                android:src="@drawable/manual_0" />
+
+            <ImageView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="10dp"
+                android:adjustViewBounds="true"
+                android:scaleType="fitCenter"
+                android:layerType="software"
+                android:contentDescription="SIYI MK32 manual page 2"
+                android:src="@drawable/manual_1" />
+
+            <ImageView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:adjustViewBounds="true"
+                android:scaleType="fitCenter"
+                android:layerType="software"
+                android:contentDescription="SIYI MK32 manual page 3"
+                android:src="@drawable/manual_2" />
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- Close (top-right). Same chip look as the HUD. -->
+    <Button
+        android:id="@+id/btn_help_close"
+        style="@style/HudChip"
+        android:layout_gravity="top|end"
+        android:layout_margin="12dp"
+        android:text="✕" />
+</FrameLayout>

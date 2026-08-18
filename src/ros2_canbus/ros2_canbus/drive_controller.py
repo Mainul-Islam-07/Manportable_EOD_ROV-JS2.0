@@ -22,6 +22,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
 
 from ros2_canbus.motor_config import MODE_CSP, MODE_CSV, MODE_CST
+from ros2_canbus.diagnostics import decode_cia402_state
 
 
 # =========================================================================
@@ -39,7 +40,10 @@ MY  = CFG['drive_controller']
 
 # -- shared --
 SM                       = CFG['state_machine']
-IDLE_SECONDS             = float(SM['idle_seconds'])
+# Drive motors disarm shortly after the command reaches 0 (they still stop
+# instantly via IDLE_STOP). Drive-specific override; the arm keeps the shared
+# (long) idle_seconds so the manipulator holds position when idle.
+IDLE_SECONDS             = float(MY.get('idle_seconds', SM['idle_seconds']))
 RE_ARM_WAIT_S            = float(SM['re_arm_wait_s'])
 EPS_CNT                  = int(SM['eps_cnt'])
 EPS_VEL_CAN              = int(SM['eps_vel_can'])
@@ -117,7 +121,7 @@ class DriveController(Node):
             self._arm_state[name] = {
                 'state': 'DISARMED', 'arming_complete_time': None,
                 'last_run_value': None, 'last_active_time': None,
-                'idle_since': None,
+                'idle_since': None, 'arm_attempts': 0,
             }
 
         self._seed_csp_from_feedback()
@@ -316,9 +320,30 @@ class DriveController(Node):
                         actions.append(('ARM', name, cfg.mode, None))
                 elif arm['state'] == 'ARMING':
                     if arm['arming_complete_time'] and now >= arm['arming_complete_time']:
-                        arm['state'] = 'ARMED'
-                        arm['arming_complete_time'] = None
-                        self.get_logger().info(f"{name}: ARMING -> ARMED")
+                        # Only declare ARMED once the drive has actually reached
+                        # CiA-402 Operation Enabled (brake released). Previously
+                        # this was purely time-based, so a drive that dropped a
+                        # controlword PDO (left in SWITCH_ON_DISABLED) or latched
+                        # a fault was marked ARMED anyway and then had RUN streamed
+                        # into it while still braked — the "one wheel won't run"
+                        # symptom. If not enabled yet, re-issue ARM (which now
+                        # also clears a fault) instead of pretending it worked.
+                        cia = decode_cia402_state(self._statusword_raw(name))
+                        if cia is None or cia == 'OPERATION_ENABLED':
+                            # cia is None => no statusword telemetry yet; fall back
+                            # to the old time-based behavior rather than block.
+                            arm['state'] = 'ARMED'
+                            arm['arming_complete_time'] = None
+                            arm['arm_attempts'] = 0
+                            self.get_logger().info(f"{name}: ARMING -> ARMED")
+                        else:
+                            arm['arm_attempts'] += 1
+                            actions.append(('ARM', name, cfg.mode, None))
+                            if arm['arm_attempts'] in (1, 5, 20):
+                                self.get_logger().warn(
+                                    f"{name}: not Operation Enabled after ARM "
+                                    f"(state={cia}); re-arming "
+                                    f"(attempt {arm['arm_attempts']})")
                 elif arm['state'] == 'ARMED':
                     if non_idle:
                         if cfg.mode == MODE_CSP:
@@ -377,10 +402,21 @@ class DriveController(Node):
                         self._arm_state[name]['state'] = 'DISARMED'
                         self._arm_state[name]['idle_since'] = None
                         self._arm_state[name]['arming_complete_time'] = None
+                        self._arm_state[name]['arm_attempts'] = 0
                     self.get_logger().info(f"{name}: idle -> DISARM")
 
             except Exception as e:
                 self.get_logger().warn(f"{name}: {action} failed ({e})")
+
+    def _statusword_raw(self, name):
+        """Latest CiA-402 statusword (0x6041) for a drive motor, or None if
+        telemetry isn't available yet. Kept fresh by the library's TPDO3
+        interrupts — the same source the heartbeat node reads. Returning None
+        makes the arming check fall back to time-based (never worse than before)."""
+        try:
+            return self._real_motors[name].telemetry.data.metadata.statusword.raw
+        except Exception:
+            return None
 
     # -- publishers -------------------------------------------------------
 

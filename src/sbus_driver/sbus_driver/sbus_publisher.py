@@ -21,8 +21,8 @@ Channel map
   CH10 – front_flipper     (3-state: -1/0/+1)
   CH11 – telescope_cmd     (3-state: -1/0/+1)
   CH12 – ee_pitch          (3-state: -1/0/+1 delta, coordinator accumulates)
-  CH13 – light_state       (TOGGLE: rising edge flips 0↔1)
-  CH14 – camera_axis       (TOGGLE: rising edge flips 0↔1, 0=pan 1=tilt)
+  CH13 – light_state       (LEVEL: switch up=on(1)  down=off(0))
+  CH14 – camera_axis       (LEVEL: switch up=tilt(1)  down=pan(0))
   CH15 – claw_cmd          (scroll: -100.0 to +100.0)
   CH16 – camera_cmd        (3-state: -1/0/+1)
 
@@ -51,9 +51,19 @@ Message field conventions (see sbus_interfaces/msg/SbusControl.msg):
   claw_cmd       : float64 -100.0 to +100.0 (scroll wheel)
   telescope_cmd  : int8    RETRACT=-1  HOLD=0  EXTEND=+1
   flippers       : int8    always active, -1/0/+1
-  light_state    : uint8   0=off  1=on (TOGGLED)
-  camera_axis    : uint8   0=pan  1=tilt (TOGGLED)
+  light_state    : uint8   0=off  1=on (follows CH13 switch)
+  camera_axis    : uint8   0=pan  1=tilt (follows CH14 switch)
   camera_cmd     : int8    -1/0/+1 (command for selected axis)
+
+light_state / camera_axis are exempt from all masking
+-----------------------------------------------------
+Every other command field is forced to 0 when DISARMED and in the link-lost
+safe state.  light_state and camera_axis are NOT: they follow their CH13/CH14
+switches in every mode, and the safe-state message carries the last-known
+values.  Neither field commands motion — camera_cmd is the actual camera
+motion command and is still zeroed — so masking them bought no safety, while
+losing the work lights on a disarm or a radio drop makes the robot harder to
+see and recover.
 """
 
 import time
@@ -254,19 +264,18 @@ class ChannelInterpreter:
 
     Persistent state held here:
       * claw_cmd      – held value of the scroll wheel
-      * light_state   – toggled ON/OFF by rising edge of CH13
-      * camera_axis   – toggled PAN/TILT by rising edge of CH14
+      * light_state   – ON/OFF, follows the CH13 maintained switch position
+      * camera_axis   – PAN/TILT, follows the CH14 maintained switch position
     """
 
     def __init__(self):
         self.claw_cmd: float = 0.0
-        # Toggle states — persist across ticks
+        # Follow the maintained CH13/CH14 switches.  These are retained across
+        # ticks because SbusPublisher._publish_safe_state reads them: when the
+        # radio link drops there is no frame to derive them from, and the safe
+        # state must carry the last-known light/axis rather than zeroing them.
         self.light_state: int = 0      # 0=off, 1=on
         self.camera_axis: int = 0      # 0=pan, 1=tilt
-        # Previous raw 2-state switch positions for edge detection.
-        # -1 = uninitialized (first frame is baseline-only, never triggers a toggle)
-        self._prev_light_raw: int = -1
-        self._prev_camera_raw: int = -1
 
     # ── Main interpret ────────────────────────────────────────────────────────
 
@@ -291,7 +300,11 @@ class ChannelInterpreter:
         # same physical axis whether in DRIVE or ARM mode.
         if mode == _MODE_DRIVE:
             fwd   = -raw[3] * drive_speed       # CH3: down=fwd, up=rev (polarity reversed)
-            turn  = raw[4] * (drive_speed / 5)  # CH4: left=left, right=right
+            turn  = raw[4] * (drive_speed / 2)  # CH4: left=left, right=right
+
+            if fwd < 0:
+                turn = - turn
+
             drive_left  = float(fwd + turn)
             drive_right = float(fwd - turn)
         else:
@@ -309,18 +322,17 @@ class ChannelInterpreter:
             arm_x_cmd = arm_y_cmd = arm_z_cmd = 0
             self.claw_cmd = 0.0
 
-        # ── CH13: light_state — TOGGLE on rising edge of switch ────────────
-        light_raw = raw[13]
-        if self._prev_light_raw == 0 and light_raw == 1:
-            self.light_state ^= 1
-        self._prev_light_raw = light_raw
+        # ── CH13: light_state — LEVEL FOLLOW the maintained switch ─────────
+        # Switch position IS the state: up (raw 1) = on, down (raw 0) = off.
+        # (Was rising-edge toggle, which suited a momentary button; with a
+        # maintained switch that needed two flicks per change because the
+        # down-flick produced no edge.)
+        self.light_state = raw[13]
         light_state = self.light_state
 
-        # ── CH14: camera_axis — TOGGLE on rising edge of switch ────────────
-        camera_raw = raw[14]
-        if self._prev_camera_raw == 0 and camera_raw == 1:
-            self.camera_axis ^= 1
-        self._prev_camera_raw = camera_raw
+        # ── CH14: camera_axis — LEVEL FOLLOW the maintained switch ─────────
+        # up (raw 1) = tilt, down (raw 0) = pan.
+        self.camera_axis = raw[14]
         camera_axis = self.camera_axis
 
         # ── Always-active fields ─────────────────────────────────────────────
@@ -373,13 +385,18 @@ class ChannelInterpreter:
                 camera_cmd      = camera_cmd,
             )
 
-        # ── DISARMED: zero ALL commands, preserve control_mode + operation_mode
-        # Note: this zeros the OUTPUT only. self.light_state, self.camera_axis,
-        # and self.claw_cmd internal toggle/held state are preserved across
-        # DISARMED periods, so re-arming resumes with the last-known UI state.
+        # ── DISARMED: zero every command except the exemptions below ───────
+        # Exempt: control_mode / operation_mode carry the operator's intent, and
+        # light_state / camera_axis are UI state rather than actuation — they
+        # keep following their CH13/CH14 switches while disarmed so a disarm
+        # doesn't kill the work lights or reset the camera selector.  camera_cmd
+        # (the actual camera motion command) IS still zeroed.
+        # Note: this zeros the OUTPUT only. self.claw_cmd internal held state is
+        # preserved across DISARMED periods.
         if op_mode == _OP_DISARMED:
             for key in result:
-                if key in ('operation_mode', 'control_mode'):
+                if key in ('operation_mode', 'control_mode',
+                           'light_state', 'camera_axis'):
                     continue
                 elif isinstance(result[key], float):
                     result[key] = 0.0
@@ -530,7 +547,7 @@ class SbusPublisher(Node):
         ch = decoded['channels']
         self._debug_count += 1
         if self._debug_count % 50 == 0:
-            self.get_logger().info(
+            self.get_logger().debug(
                 f"CH1={ch[0]:4d} CH2={ch[1]:4d} CH3={ch[2]:4d} CH4={ch[3]:4d} "
                 f"CH5={ch[4]:4d} CH6={ch[5]:4d} CH7={ch[6]:4d} CH8={ch[7]:4d} "
                 f"CH9={ch[8]:4d} CH10={ch[9]:4d} CH11={ch[10]:4d} CH12={ch[11]:4d} "
@@ -570,7 +587,8 @@ class SbusPublisher(Node):
 
     def _publish_safe_state(self, now_ns: int, reason: str) -> None:
         """
-        Publish an explicit DISARMED + zero-everything message.
+        Publish an explicit DISARMED message with every command zeroed,
+        except light_state / camera_axis which carry their last-known values.
 
         Called when the radio link is lost (failsafe flag, frame_lost flag,
         no frames within the timeout window, or decode/sanity failure).
@@ -594,6 +612,12 @@ class SbusPublisher(Node):
         msg.header.frame_id = 'sbus'
         msg.control_mode    = _MODE_ARM         # benign default
         msg.operation_mode  = _OP_DISARMED      # critical: gates everything off
+        # Light and camera axis survive the link loss — neither commands motion,
+        # and keeping the lights on makes the robot findable when the radio is
+        # gone. Both default to 0 in ChannelInterpreter.__init__, so before the
+        # first frame this still publishes lights-off / pan.
+        msg.light_state     = int(self._interp.light_state)
+        msg.camera_axis     = int(self._interp.camera_axis)
         # All other fields stay at their zero defaults from msg construction.
         self._pub.publish(msg)
 

@@ -1,0 +1,27 @@
+# /etc/udev/rules.d/90-can-persistent.rules
+# ─────────────────────────────────────────────────────────────────────────
+# Persistent CAN interface names for Raspberry Pi 5
+#
+# Problem:  can0 / can1 swap on every reboot depending on which USB
+#           adapter enumerates first.
+# Fix:      Match on the physical USB port path (KERNELS) and assign a
+#           deterministic NAME.
+#
+# Current wiring (from `ls -la /sys/class/net/can*/device`):
+#   USB port 1-1  (USB 3.0 bottom-left)  →  Drive bus  →  can_drive
+#   USB port 3-1  (USB 2.0 bottom-right) →  Arm bus    →  can_arm
+#
+# After installing:
+#   sudo cp 90-can-persistent.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#
+# Then update your CAN bring-up commands and JSON configs to use
+# "can_drive" / "can_arm" instead of "can0" / "can1".
+# ─────────────────────────────────────────────────────────────────────────
+
+# Drive bus — USB controller usb2, port 2-1
+SUBSYSTEM=="net", ACTION=="add", KERNELS=="2-1:1.0", NAME="can_drive"
+
+# Arm bus — USB controller usb4, port 4-1
+SUBSYSTEM=="net", ACTION=="add", KERNELS=="4-1:1.0", NAME="can_arm"

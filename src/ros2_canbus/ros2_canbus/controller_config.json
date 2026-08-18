@@ -105,6 +105,8 @@
     "drive_controller": {
         "ros_node_name"         : "drive_controller",
 
+        "idle_seconds"          : 1.0,
+
         "topics": {
             "flipper_cmd"       : "/flipper_joint_commands",
             "sbus_js"           : "/sbus/joint_states",

@@ -25,9 +25,6 @@ setup(
     entry_points={
         'console_scripts': [
             'sbus_publisher = sbus_driver.sbus_publisher:main',
-            'teleop_input_node = sbus_driver.teleop_input_node:main',
-            'dummy_arm = sbus_driver.dummy_arm:main',
-            'gpio_control = sbus_driver.gpio_control:main',
         ],
     },
 )

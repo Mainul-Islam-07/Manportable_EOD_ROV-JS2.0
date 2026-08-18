@@ -1,6 +1,7 @@
 package com.avatarrobot.camswitcher
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
@@ -16,75 +17,152 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
+import android.view.ViewGroup
+import android.view.Window
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import com.alexvas.rtsp.widget.RtspDataListener
 import com.alexvas.rtsp.widget.RtspStatusListener
 import com.alexvas.rtsp.widget.RtspSurfaceView
+import com.avatarrobot.camswitcher.twin.JointState
+import com.avatarrobot.camswitcher.twin.OrbitGLSurfaceView
+import com.avatarrobot.camswitcher.twin.RobotRenderer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * Single-Activity, 5-feed RTSP switcher + screen recorder for the Avatar rover.
+ * Single-Activity Avatar HUD: a 5-feed RTSP switcher with a transparent 3D
+ * digital-twin overlay, two-way intercom, screen recorder, gimbal control, and a
+ * FIRING→AIM fire-control flow. (Consolidates the former AvatarCamSwitcher,
+ * JS2.0_Digital_Twin, and ARMSWITCH apps.)
  *
+ * - Camera/zoom/sound are tap-to-expand dropdowns (HudDropdown); the active
+ *   option is shown green.
+ * - Battery and the 3D twin both feed off ONE UDP :9870 socket
+ *   (UdpTelemetryReceiver), bound while foreground and released in onPause so
+ *   AvatarDashboard can own the port when we background.
  * - Switching is serialized via onRtspStatusDisconnected so two decoders never
- *   share the surface (no cross-feed flicker / mosaic); a black cover masks the
- *   transient and lifts on the first clean frame.
- * - FRONT/BACK are upside-down mounted → flipped 180 via per-feed videoRotation.
- * - Recording captures the WHOLE screen via MediaProjection, so switching cameras
- *   happens inside one continuous file and does NOT stop the recording.
+ *   share the surface; a black cover masks the transient.
  */
 class MainActivity : AppCompatActivity() {
 
     enum class CameraFeed(val label: String, val url: String, val rotation: Int) {
-        FRONT("FRONT", "rtsp://192.168.144.65:8554/main.264", 180),  // upside-down mount
-        BACK ("BACK",  "rtsp://192.168.144.66:8554/main.264", 180),  // upside-down mount
-        WRIST("WRIST", "rtsp://192.168.144.67:8554/main.264", 0),
-        GRIP ("GRIP",  "rtsp://192.168.144.68:8554/main.264", 0),
-        MAIN ("MAIN",  "rtsp://192.168.144.25:8554/main.264", 0)
+        FRONT("FRONT CAM", "rtsp://192.168.144.65:8554/main.264", 180),  // upside-down mount
+        BACK ("BACK CAM",  "rtsp://192.168.144.66:8554/main.264", 180),  // upside-down mount
+        WRIST("WRIST CAM", "rtsp://192.168.144.67:8554/main.264", 0),
+        GRIP ("GRIP CAM",  "rtsp://192.168.144.68:8554/main.264", 0),
+        MAIN ("MAIN CAM",  "rtsp://192.168.144.25:8554/main.264", 0)
     }
+
+    /** FIRING/AIM button lifecycle. */
+    private enum class FireUi { IDLE, COUNTING, AIM }
 
     private lateinit var rtspView: RtspSurfaceView
     private lateinit var cover: View
+    private lateinit var txtStatus: TextView      // centred "RECONNECTING …" indicator
     private lateinit var btnRecord: Button
-    private lateinit var txtRec: TextView
-    private lateinit var zoomBar: View
+    private lateinit var txtBattery: TextView
+
+    // Dropdowns
+    private lateinit var btnCamera: Button
+    private lateinit var btnZoom: Button
+    private lateinit var btnSound: Button       // master intercom on/off
+    private lateinit var btnTalk: Button         // hold-to-talk (momentary)
+    private lateinit var btnMic: Button          // mic-source dropdown anchor
+
+    private lateinit var cameraDropdown: HudDropdown<CameraFeed>
+    private lateinit var zoomDropdown: HudDropdown<Int>
+
+    // Fire control
+    private lateinit var btnFire: Button
+    private var fireUi = FireUi.IDLE
+
+    // SBUS mode chip (right of FIRING), fed by sbus_mode_udp_bridge on :9871.
+    private lateinit var txtMode: TextView
+    private val sbusReceiver by lazy {
+        SbusModeReceiver(onMode = { mode -> runOnUiThread { updateMode(mode) } })
+    }
+    private val modeStaleRunnable = Runnable { showModeNoLink() }
+
+    // 3D twin
+    private lateinit var twinContainer: FrameLayout
+    private lateinit var btn3d: Button
+    private val jointState = JointState()
+    private lateinit var glView: OrbitGLSurfaceView
+    private var twinVisible = false        // 3D twin starts closed; tap 3D to show
+    private var twinSuspended = false      // twin overlay parked during a feed switch
+
     private lateinit var gimbalPanel: View
-    private val buttons = mutableMapOf<CameraFeed, Button>()
-    private val zoomButtons = mutableMapOf<Int, Button>()
 
     // SIYI A8 mini pan/tilt over UDP (192.168.144.25:37260). MAIN-feed only.
     private val gimbal = SiyiGimbalController()
 
-    // Two-way intercom over UDP with the rover host (192.168.144.10:5555).
-    // Half-duplex push-to-talk: resting = listening (speaker on), pressed = talking
-    // (mic on, speaker muted).
+    // ONE telemetry socket on :9870 → battery chip + 3D joint state.
+    private val telemetryReceiver by lazy {
+        UdpTelemetryReceiver(
+            onBattery = { pct -> runOnUiThread { updateBattery(pct) } },
+            onJoints = { json -> jointState.update(json, System.currentTimeMillis()) },
+        )
+    }
+
+    // Two-way intercom over UDP with the rover host (192.168.144.100:5555).
     private val audioLink by lazy { AudioLinkController(applicationContext) }
-    private lateinit var btnTalk: Button
+    // Master intercom on/off, plus momentary hold-to-talk. Half-duplex: when
+    // sound is on, releasing TALK = LISTEN (Pi mic -> here), holding = TALK
+    // (mic -> Pi speaker).
+    private var soundOn = false
     private var talking = false
 
-    // Digital zoom for the MAIN feed only: a center-pivoted view scale (1x..4x).
-    // Persists while MAIN is selected; the surface is reset to 1x on other feeds.
+    // Digital zoom for the MAIN feed only (1x..4x), persisted while MAIN is active.
     private var mainZoom = 1
+
+    private var videoW = 0
+    private var videoH = 0
 
     // ---- State engine -------------------------------------------------------
     private var currentFeed: CameraFeed = CameraFeed.MAIN
     private var pendingFeed: CameraFeed? = CameraFeed.MAIN
     private var surfaceReady = false
     private var switching = false
-
-    // Auto-reconnect: while the activity is in the foreground, a failed feed is
-    // re-initialized on a timer until a frame finally renders. Cleared the moment
-    // we get a first frame, switch feeds, or leave the foreground.
     private var reconnecting = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val forceStartRunnable = Runnable { beginPendingFeed() }
     private val retryRunnable = Runnable { retryCurrentFeed() }
+    // Fires if start() connects but no frame renders in time (camera booting,
+    // bad codec, stalled encoder) — routes into the reconnect path so the screen
+    // never sits on indefinite black.
+    private val firstFrameWatchdog = Runnable { enterReconnecting() }
+
+    // Frame-arrival heartbeat: the RTSP data listener stamps this on every video
+    // NAL unit. Because TCP head-of-line blocking freezes the picture (holding the
+    // last frame) instead of erroring, we watch for a gap in NAL arrivals and cover
+    // the frozen frame with black almost immediately — then uncover the instant
+    // frames resume. A sustained freeze escalates to a real reconnect via the
+    // library's own socket-read timeout (onRtspStatusFailed).
+    @Volatile private var lastVideoNalMs = 0L
+    private var frozen = false                 // black cover shown for a live-stream freeze
+    private val stallWatchdog = object : Runnable {
+        override fun run() {
+            if (surfaceReady && !reconnecting) {
+                val idle = SystemClock.elapsedRealtime() - lastVideoNalMs
+                if (idle > STALL_TIMEOUT_MS) {
+                    if (!frozen) { frozen = true; showCover() }       // freeze → instant black
+                } else if (frozen) {
+                    frozen = false; hideCover()                       // frames back → uncover
+                }
+                mainHandler.postDelayed(this, STALL_CHECK_MS)
+            }
+        }
+    }
+
+    private val countdownRunnable = Runnable { onFireCountdownDone() }
 
     // ---- Recording ----------------------------------------------------------
     private var recStartMs = 0L
@@ -92,7 +170,7 @@ class MainActivity : AppCompatActivity() {
     private val recTimerRunnable = object : Runnable {
         override fun run() {
             val s = (SystemClock.elapsedRealtime() - recStartMs) / 1000
-            txtRec.text = String.format(Locale.US, "\u25CF REC  %02d:%02d", s / 60, s % 60)
+            btnRecord.text = String.format(Locale.US, "REC %02d:%02d", s / 60, s % 60)
             mainHandler.postDelayed(this, 1000)
         }
     }
@@ -109,50 +187,75 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Optional: lets the recording notification show on Android 13+.
     private val notifPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* recording still works if denied; notification is just suppressed */ }
+    ) { /* recording still works if denied */ }
 
-    // Android 9 and below need this to write recordings into public DCIM; API 29+
-    // uses MediaStore and needs no permission.
     private val storagePermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* if denied on legacy, the save into DCIM will simply fail */ }
+    ) { /* legacy DCIM save fails silently if denied */ }
 
-    // Mic capture needs RECORD_AUDIO. Requested the first time the talk button is
-    // pressed; the user then presses again to talk (the grant dialog consumes the
-    // initial press).
+    // Mic capture needs RECORD_AUDIO. Requested when the master is switched on so
+    // hold-to-talk works immediately; LISTEN works regardless. If denied, sound
+    // stays on for LISTEN only and holding TALK simply won't capture.
     private val micPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (!granted) Toast.makeText(this, "Microphone permission denied", Toast.LENGTH_SHORT).show()
+        if (!granted) {
+            Toast.makeText(this, "Microphone permission denied — TALK disabled",
+                Toast.LENGTH_SHORT).show()
+        }
+        applyAudio()
+    }
+
+    // AIM window result: RESULT_OK means RESET was pressed (rover disarmed) → reset
+    // the FIRING/AIM button to FIRING. Anything else (BACK) keeps it on AIM.
+    private val armLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) resetFireButton()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
+        configureSystemBars()
 
-        rtspView  = findViewById(R.id.rtsp_view)
-        cover     = findViewById(R.id.transition_cover)
-        btnRecord = findViewById(R.id.btn_record)
-        txtRec    = findViewById(R.id.txt_rec)
-        zoomBar     = findViewById(R.id.zoom_bar)
-        gimbalPanel = findViewById(R.id.gimbal_panel)
-        btnTalk     = findViewById(R.id.btn_talk)
+        rtspView      = findViewById(R.id.rtsp_view)
+        cover         = findViewById(R.id.transition_cover)
+        txtStatus     = findViewById(R.id.txt_status)
+        btnRecord     = findViewById(R.id.btn_record)
+        txtBattery    = findViewById(R.id.txt_battery)
+        btnCamera     = findViewById(R.id.btn_camera)
+        btnZoom       = findViewById(R.id.btn_zoom)
+        btnSound      = findViewById(R.id.btn_sound)
+        btnTalk       = findViewById(R.id.btn_talk)
+        btnMic        = findViewById(R.id.btn_mic)
+        btnFire       = findViewById(R.id.btn_fire)
+        txtMode       = findViewById(R.id.txt_mode)
+        gimbalPanel   = findViewById(R.id.gimbal_panel)
+        twinContainer = findViewById(R.id.twin_container)
+        btn3d         = findViewById(R.id.btn_3d)
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
             != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
-
         if (Build.VERSION.SDK_INT < 29 &&
             checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
             != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             storagePermLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
+
+        // ---- 3D twin overlay ----
+        glView = OrbitGLSurfaceView(this, RobotRenderer(assets, jointState))
+        twinContainer.addView(glView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // Twin starts closed: keep the GL surface torn down until the user taps 3D.
+        glView.visibility = View.GONE
+        btn3d.setOnClickListener { toggleTwin() }
 
         // Low-latency: no smoothing buffer; SPS rewrite OFF (it caused artifacts).
         rtspView.videoFrameRateStabilization = false
@@ -161,25 +264,35 @@ class MainActivity : AppCompatActivity() {
         rtspView.setStatusListener(object : RtspStatusListener {
             override fun onRtspFirstFrameRendered() = runOnUiThread {
                 reconnecting = false
+                frozen = false
                 mainHandler.removeCallbacks(retryRunnable)
+                mainHandler.removeCallbacks(firstFrameWatchdog)
+                hideReconnecting()
                 hideCover()
+                resumeTwinOverlay()
+                // Stream is live — start the frame-arrival heartbeat.
+                lastVideoNalMs = SystemClock.elapsedRealtime()
+                mainHandler.removeCallbacks(stallWatchdog)
+                mainHandler.postDelayed(stallWatchdog, STALL_CHECK_MS)
             }
             override fun onRtspStatusDisconnected() = runOnUiThread {
                 if (switching || pendingFeed != null) beginPendingFeed()
             }
+            override fun onRtspFrameSizeChanged(width: Int, height: Int) = runOnUiThread {
+                fitSurfaceToVideo(width, height)
+            }
             override fun onRtspStatusFailed(message: String?) = runOnUiThread {
-                if (!surfaceReady) return@runOnUiThread
-                // Toast only once per outage so a long retry loop doesn't spam.
-                if (!reconnecting) {
-                    reconnecting = true
-                    Toast.makeText(this@MainActivity, "Stream error — reconnecting…",
-                        Toast.LENGTH_SHORT).show()
-                }
-                switching = false
-                showCover()
-                mainHandler.removeCallbacks(forceStartRunnable)
-                mainHandler.removeCallbacks(retryRunnable)
-                mainHandler.postDelayed(retryRunnable, RETRY_DELAY_MS)
+                enterReconnecting()
+            }
+        })
+
+        // Heartbeat source: fired (on the RTSP IO thread) for each video NAL unit.
+        // We only stamp the arrival time; stallWatchdog reads it on the UI thread.
+        rtspView.setDataListener(object : RtspDataListener {
+            override fun onRtspDataVideoNalUnitReceived(
+                data: ByteArray, offset: Int, length: Int, timestamp: Long
+            ) {
+                lastVideoNalMs = SystemClock.elapsedRealtime()
             }
         })
 
@@ -195,45 +308,223 @@ class MainActivity : AppCompatActivity() {
                 switching = false
                 mainHandler.removeCallbacks(forceStartRunnable)
                 mainHandler.removeCallbacks(retryRunnable)
+                mainHandler.removeCallbacks(firstFrameWatchdog)
+                mainHandler.removeCallbacks(stallWatchdog)
                 rtspView.stop()
             }
         })
 
-        // The service is the source of truth for recording state: update the button
-        // the moment recording actually starts/stops (start is async, so the button
-        // can't be driven reliably from the click path alone).
         ScreenRecordService.onStateChange = { active -> runOnUiThread { onRecordingStateChanged(active) } }
 
-        wireButtons()
-        wireZoomButtons()
-        wireGimbalButtons()
+        setupDropdowns()
+        // If the mic can't open (device error), drop back to LISTEN (keep sound on).
+        audioLink.onMicFailed = {
+            talking = false
+            applyAudio()
+            Toast.makeText(this, "No external mic — check it's plugged in", Toast.LENGTH_SHORT).show()
+        }
+        // Capture is external-mic-only, so the chip is a live availability indicator
+        // rather than a selector: green MIC USB when one is plugged in, red MIC NONE when
+        // not (in which case TALK will refuse rather than use the MK32's internal mic).
+        audioLink.onMicPresenceChanged = { present -> showMicPresence(present) }
+        btnSound.setOnClickListener { toggleSound() }
         wireTalkButton()
+        wireGimbalButtons()
         btnRecord.setOnClickListener { toggleRecording() }
-        highlightActive(currentFeed)
-        updateZoomControls(currentFeed)
+        btnFire.setOnClickListener { onFirePressed() }
+        findViewById<Button>(R.id.btn_help).setOnClickListener { showManual() }
+
+        cameraDropdown.setCurrent(currentFeed)
+        updateMainOnlyControls(currentFeed)
+        updateBattery(-1)                  // grey "--" until the first packet
+        // 3D figure is hidden by default → 3D button starts grey (green when on).
+        btn3d.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#9E9E9E"))
+        showModeNoLink()                   // grey "—" until the first SBUS packet
         showCover()
     }
 
-    private fun wireButtons() {
-        buttons[CameraFeed.FRONT] = findViewById(R.id.btn_front)
-        buttons[CameraFeed.BACK]  = findViewById(R.id.btn_back)
-        buttons[CameraFeed.WRIST] = findViewById(R.id.btn_wrist)
-        buttons[CameraFeed.GRIP]  = findViewById(R.id.btn_grip)
-        buttons[CameraFeed.MAIN]  = findViewById(R.id.btn_main)
-        buttons.forEach { (feed, button) -> button.setOnClickListener { switchTo(feed) } }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) configureSystemBars()
     }
 
-    private fun wireZoomButtons() {
-        zoomButtons[1] = findViewById(R.id.btn_zoom_1)
-        zoomButtons[2] = findViewById(R.id.btn_zoom_2)
-        zoomButtons[3] = findViewById(R.id.btn_zoom_3)
-        zoomButtons[4] = findViewById(R.id.btn_zoom_4)
-        zoomButtons.forEach { (factor, button) -> button.setOnClickListener { applyZoom(factor) } }
+    // -- Dropdowns -------------------------------------------------------------
+    private fun setupDropdowns() {
+        // CAMERA + ZOOM sit at the bottom, so their lists drop UP.
+        cameraDropdown = HudDropdown(
+            btnCamera,
+            listOf(
+                CameraFeed.MAIN to CameraFeed.MAIN.label, CameraFeed.FRONT to CameraFeed.FRONT.label,
+                CameraFeed.BACK to CameraFeed.BACK.label, CameraFeed.WRIST to CameraFeed.WRIST.label,
+                CameraFeed.GRIP to CameraFeed.GRIP.label,
+            ),
+            dropUp = true,
+        ) { feed -> switchTo(feed) }
+
+        zoomDropdown = HudDropdown(
+            btnZoom,
+            listOf(4 to "4X", 3 to "3X", 2 to "2X", 1 to "1X"),
+            dropUp = true,
+        ) { factor -> applyZoom(factor) }
+        zoomDropdown.setCurrent(mainZoom)
+
     }
 
-    // Hold-to-move gimbal D-pad: press an arrow → move the A8 mini at MOVE_SPEED;
-    // release (or the touch is cancelled) → stop. Center recenters the gimbal.
-    // Sign mapping: right = +yaw, up = +pitch; flip a sign here if an axis is inverted.
+    // External-mic availability chip, updated live as the USB mic is plugged/unplugged.
+    private fun showMicPresence(present: Boolean) {
+        btnMic.text = if (present) "MIC USB" else "MIC NONE"
+        btnMic.backgroundTintList = ColorStateList.valueOf(
+            if (present) Color.parseColor("#2E7D32") else Color.parseColor("#D32F2F"))
+    }
+
+    // Battery chip (grey pill; red under 15%; "--" when unknown).
+    private fun updateBattery(pct: Int) {
+        val known = pct in 0..100
+        val low = known && pct < 15
+        txtBattery.text = if (known) "$pct%" else "--"
+        txtBattery.backgroundTintList = ColorStateList.valueOf(
+            if (low) 0xFFD32F2F.toInt() else 0xFF9E9E9E.toInt())
+    }
+
+    // -- Sound: master on/off + momentary hold-to-talk (half-duplex) ----------
+
+    // Master button: toggles the whole intercom. Turning on requests RECORD_AUDIO
+    // up front (so holding TALK works at once); LISTEN works either way.
+    private fun toggleSound() {
+        soundOn = !soundOn
+        if (soundOn &&
+            checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            micPermLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+            return                    // applyAudio() runs from the permission callback
+        }
+        applyAudio()
+    }
+
+    // Hold-to-talk: press and hold = TALK, release = back to LISTEN. Same
+    // ACTION_DOWN/UP pattern as the gimbal D-pad (holdToMove).
+    @SuppressLint("ClickableViewAccessibility")
+    private fun wireTalkButton() {
+        btnTalk.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (soundOn) { v.isPressed = true; talking = true; applyAudio() }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.isPressed = false; talking = false; applyAudio(); true
+                }
+                else -> false
+            }
+        }
+    }
+
+    // Single place that enforces half-duplex from (soundOn, talking):
+    //   off        -> mic off + speaker off
+    //   on + hold  -> mic on  + speaker off   (TALK: mic -> Pi speaker)
+    //   on + !hold -> speaker on + mic off    (LISTEN: Pi mic -> here)
+    private fun applyAudio() {
+        btnTalk.visibility = if (soundOn) View.VISIBLE else View.GONE
+        btnMic.visibility = if (soundOn) View.VISIBLE else View.GONE
+        btnSound.text = if (soundOn) "SOUND ON" else "SOUND"
+        btnSound.backgroundTintList = ColorStateList.valueOf(
+            if (soundOn) Color.parseColor("#2E7D32") else Color.parseColor("#9E9E9E"))
+
+        if (!soundOn) {
+            talking = false
+            audioLink.setMicEnabled(false)
+            audioLink.setSpeakerEnabled(false)
+            return
+        }
+        btnTalk.backgroundTintList = ColorStateList.valueOf(
+            if (talking) Color.parseColor("#D32F2F") else Color.parseColor("#9E9E9E"))
+        if (talking) {
+            audioLink.setMicEnabled(true)
+            audioLink.setSpeakerEnabled(false)
+        } else {
+            audioLink.setSpeakerEnabled(true)
+            audioLink.setMicEnabled(false)
+        }
+    }
+
+    // -- 3D twin toggle --------------------------------------------------------
+    // The GL view is a z-ordered media-overlay surface, so hiding only the
+    // container does NOT remove it. Toggle the GLSurfaceView itself (and pause /
+    // resume its render thread) so the surface is actually torn down / recreated.
+    private fun toggleTwin() {
+        twinVisible = !twinVisible
+        if (twinVisible) {
+            glView.visibility = View.VISIBLE
+            glView.onResume()
+        } else {
+            glView.onPause()
+            glView.visibility = View.GONE
+        }
+        // Leave the (empty, transparent) container laid out — it is the battery
+        // chip's end anchor, so collapsing it would shift the battery. Only the
+        // GL surface above is toggled.
+        btn3d.backgroundTintList = ColorStateList.valueOf(
+            if (twinVisible) Color.parseColor("#2E7D32") else Color.parseColor("#9E9E9E"))
+    }
+
+    // -- Fire control (FIRING → 60 s → AIM) -----------------------------------
+    private fun onFirePressed() {
+        when (fireUi) {
+            FireUi.IDLE -> startFiring()
+            FireUi.COUNTING -> { /* locked during the hidden countdown */ }
+            FireUi.AIM -> armLauncher.launch(Intent(this, ArmFireActivity::class.java))
+        }
+    }
+
+    private fun startFiring() {
+        fireUi = FireUi.COUNTING
+        btnFire.text = "FIRING"
+        btnFire.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#D32F2F"))
+        // Enter fire mode 1: hold the presence heartbeat to the Pi (port 5006), so
+        // fire_server.py publishes /fire_mode = 1. Stays up until RESET / app close.
+        HeartbeatClient.start()
+        mainHandler.removeCallbacks(countdownRunnable)
+        mainHandler.postDelayed(countdownRunnable, FIRE_COUNTDOWN_MS)
+    }
+
+    private fun onFireCountdownDone() {
+        fireUi = FireUi.AIM
+        btnFire.text = "AIM"
+        btnFire.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#2E7D32"))
+    }
+
+    /** Back to the resting FIRING state (after AIM-window RESET). */
+    private fun resetFireButton() {
+        mainHandler.removeCallbacks(countdownRunnable)
+        // Fire mode 0: drop the heartbeat so /fire_mode times out to 0 on the Pi.
+        HeartbeatClient.stop()
+        fireUi = FireUi.IDLE
+        btnFire.text = "FIRING"
+        btnFire.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#9E9E9E"))
+    }
+
+    // -- SBUS mode chip (right of FIRING) -------------------------------------
+    // DISARM is red (safe/disarmed stands out); STAIR is amber (armed, but a
+    // distinct operating mode); ARM/HOME/DRIVE are green (armed, normal).
+    // Each packet reschedules the stale fallback so a dropped feed shows "—".
+    private fun updateMode(mode: String) {
+        mainHandler.removeCallbacks(modeStaleRunnable)
+        txtMode.text = mode
+        val color = when (mode) {
+            "DISARM" -> "#D32F2F"   // red   — safe/disarmed stands out
+            "STAIR"  -> "#F57C00"   // amber — stair mode, armed but distinct
+            else     -> "#2E7D32"   // green — ARM / HOME / DRIVE
+        }
+        txtMode.backgroundTintList = ColorStateList.valueOf(Color.parseColor(color))
+        mainHandler.postDelayed(modeStaleRunnable, MODE_STALE_MS)
+    }
+
+    private fun showModeNoLink() {
+        txtMode.text = "—"
+        txtMode.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#9E9E9E"))
+    }
+
+    // -- Gimbal D-pad ----------------------------------------------------------
     private fun wireGimbalButtons() {
         val s = SiyiGimbalController.MOVE_SPEED
         holdToMove(R.id.btn_pan_left,  -s, 0)
@@ -247,88 +538,54 @@ class MainActivity : AppCompatActivity() {
     private fun holdToMove(buttonId: Int, yaw: Int, pitch: Int) {
         findViewById<Button>(buttonId).setOnTouchListener { v, event ->
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    v.isPressed = true
-                    gimbal.startMove(yaw, pitch)
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.isPressed = false
-                    gimbal.stopMove()
-                    true
-                }
+                MotionEvent.ACTION_DOWN -> { v.isPressed = true; gimbal.startMove(yaw, pitch); true }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.isPressed = false; gimbal.stopMove(); true }
                 else -> false
             }
         }
     }
 
-    // -- Intercom audio (single talk toggle) ----------------------------------
-    // Half-duplex latching toggle: tap to talk (mic on + incoming audio muted),
-    // tap again to listen (mic off + incoming audio playing).
-    private fun wireTalkButton() {
-        btnTalk.setOnClickListener { if (talking) startListening() else startTalking() }
-        // If the mic can't open (device error), revert to listening on the UI thread.
-        audioLink.onMicFailed = {
-            startListening()
-            Toast.makeText(this, "Couldn't start microphone", Toast.LENGTH_SHORT).show()
-        }
-        updateTalkButton()
+    private fun fitSurfaceToVideo(w: Int, h: Int) {
+        if (w <= 0 || h <= 0) return
+        videoW = w; videoH = h
+        val parent = rtspView.parent as? View ?: return
+        val pw = parent.width; val ph = parent.height
+        if (pw == 0 || ph == 0) { rtspView.post { fitSurfaceToVideo(w, h) }; return }
+        // Letterbox to the video's true aspect ratio (no fill zoom): the surface
+        // is sized to fit and centered, so black bars on the unused axis are
+        // expected — the feed is shown at its original proportions.
+        val fit = minOf(pw / w.toFloat(), ph / h.toFloat())
+        val lp = rtspView.layoutParams
+        lp.width = (w * fit).toInt()
+        lp.height = (h * fit).toInt()
+        rtspView.layoutParams = lp
+        applyVideoScale()
     }
 
-    // Enter listening: speaker on, mic off. The default/resting intercom state.
-    // Enable the speaker BEFORE disabling the mic so communication-mode audio
-    // routing stays set across the switch (avoids a slow HAL teardown/re-setup).
-    private fun startListening() {
-        talking = false
-        updateTalkButton()                 // optimistic: UI flips instantly
-        audioLink.setSpeakerEnabled(true)
-        audioLink.setMicEnabled(false)
+    // Surface scale = the user's digital zoom only (MAIN feed); other feeds 1x.
+    // Center-pivoted; no aspect-fill zoom, so the video keeps its true shape.
+    private fun applyVideoScale() {
+        val s = if (currentFeed == CameraFeed.MAIN) mainZoom.toFloat() else 1f
+        rtspView.scaleX = s
+        rtspView.scaleY = s
     }
 
-    // Press: switch to talking — open the mic, mute the speaker. Mic first (same
-    // sticky-routing reason as above). Needs RECORD_AUDIO; if not yet granted,
-    // request it and stay listening (user presses again).
-    private fun startTalking() {
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
-            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            micPermLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-            return
-        }
-        talking = true
-        updateTalkButton()                 // optimistic: UI flips instantly
-        audioLink.setMicEnabled(true)
-        audioLink.setSpeakerEnabled(false)
-    }
-
-    // Green "Talking" while pressed, grey "Listening" at rest (REC button look).
-    private fun updateTalkButton() {
-        btnTalk.text = if (talking) "🎤 Talking" else "🔈 Listening"
-        btnTalk.backgroundTintList = ColorStateList.valueOf(
-            if (talking) Color.parseColor("#2E7D32") else Color.parseColor("#9E9E9E"))
-    }
-
-    // Scales the video surface from its center. SurfaceView honors view-level
-    // scaleX/scaleY, so 2x crops to the middle half of the frame, etc.
     private fun applyZoom(factor: Int) {
         mainZoom = factor
-        rtspView.scaleX = factor.toFloat()
-        rtspView.scaleY = factor.toFloat()
-        zoomButtons.forEach { (f, button) -> button.isSelected = (f == factor) }
+        applyVideoScale()
+        zoomDropdown.setCurrent(factor)
     }
 
-    // Zoom + gimbal are MAIN-only controls: show the right panel and (re)apply the
-    // saved zoom on MAIN; hide it, reset the surface to 1x, and halt any gimbal
-    // motion on every other feed.
-    private fun updateZoomControls(feed: CameraFeed) {
+    // Zoom + gimbal are MAIN-only controls.
+    private fun updateMainOnlyControls(feed: CameraFeed) {
         if (feed == CameraFeed.MAIN) {
-            zoomBar.visibility = View.VISIBLE
+            btnZoom.visibility = View.VISIBLE
             gimbalPanel.visibility = View.VISIBLE
             applyZoom(mainZoom)
         } else {
-            zoomBar.visibility = View.GONE
+            btnZoom.visibility = View.GONE
             gimbalPanel.visibility = View.GONE
-            rtspView.scaleX = 1f
-            rtspView.scaleY = 1f
+            applyVideoScale()       // still fill the bars (no digital zoom off-MAIN)
             gimbal.stopMove()
         }
     }
@@ -339,12 +596,14 @@ class MainActivity : AppCompatActivity() {
 
         currentFeed = feed
         pendingFeed = feed
-        // Abandon any in-flight reconnect for the previous feed.
         reconnecting = false
+        frozen = false
         mainHandler.removeCallbacks(retryRunnable)
-        highlightActive(feed)
-        updateZoomControls(feed)
+        mainHandler.removeCallbacks(stallWatchdog)
+        cameraDropdown.setCurrent(feed)
+        updateMainOnlyControls(feed)
         showCover()
+        suspendTwinOverlay()
 
         if (!surfaceReady) return
         if (switching) return
@@ -363,21 +622,27 @@ class MainActivity : AppCompatActivity() {
         if (!surfaceReady) return
         mainHandler.removeCallbacks(forceStartRunnable)
         switching = false
+        frozen = false
         val feed = pendingFeed ?: currentFeed
         pendingFeed = null
 
         rtspView.stop()
-        rtspView.videoRotation = feed.rotation     // 180 for upside-down-mounted cams
-        rtspView.init(Uri.parse(feed.url))
+        rtspView.videoRotation = feed.rotation
+        // Shorter socket timeout so an offline camera fails fast instead of the
+        // library's ~5 s default; watchdog covers the connected-but-no-video case.
+        rtspView.init(Uri.parse(feed.url), socketTimeout = SOCKET_TIMEOUT_MS)
         rtspView.start(requestVideo = true, requestAudio = false)
+        // New stream: the heartbeat re-arms only once its first frame renders.
+        mainHandler.removeCallbacks(stallWatchdog)
+        mainHandler.removeCallbacks(firstFrameWatchdog)
+        mainHandler.postDelayed(firstFrameWatchdog, FIRST_FRAME_TIMEOUT_MS)
     }
 
-    // Re-arm the CURRENT feed after a failure. Keeps the cover up; the retry loop
-    // ends naturally when onRtspFirstFrameRendered fires (or the user leaves/switches).
     private fun retryCurrentFeed() {
         if (!surfaceReady) return
         pendingFeed = currentFeed
         showCover()
+        suspendTwinOverlay()
         beginPendingFeed()
     }
 
@@ -390,7 +655,6 @@ class MainActivity : AppCompatActivity() {
             onRecordingStateChanged(false)
             Toast.makeText(this, "Saved to DCIM/JS2.0: ${lastRecordName ?: "file"}", Toast.LENGTH_LONG).show()
         } else {
-            // Pops the system "Start recording?" consent dialog. Result → launcher.
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             projectionLauncher.launch(mpm.createScreenCaptureIntent())
         }
@@ -402,10 +666,9 @@ class MainActivity : AppCompatActivity() {
         lastRecordName = name
 
         val metrics = resources.displayMetrics
-        val w = metrics.widthPixels - (metrics.widthPixels % 2)   // encoder needs even dims
+        val w = metrics.widthPixels - (metrics.widthPixels % 2)
         val h = metrics.heightPixels - (metrics.heightPixels % 2)
 
-        // Recordings land in the public DCIM/JS2.0 album (see ScreenRecordService).
         val svc = Intent(this, ScreenRecordService::class.java).apply {
             action = ScreenRecordService.ACTION_START
             putExtra(ScreenRecordService.EXTRA_RESULT_CODE, resultCode)
@@ -421,19 +684,16 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Recording → DCIM/JS2.0/$name", Toast.LENGTH_LONG).show()
     }
 
+    // REC oval: red + live MM:SS while recording, grey "REC" when idle.
     private fun onRecordingStateChanged(active: Boolean) {
-        // Red while recording, grey when idle.
         btnRecord.backgroundTintList = ColorStateList.valueOf(
             if (active) Color.parseColor("#D32F2F") else Color.parseColor("#9E9E9E"))
         if (active) {
             recStartMs = SystemClock.elapsedRealtime()
-            btnRecord.text = "\u25CF Rec On"
-            txtRec.visibility = View.VISIBLE
             mainHandler.post(recTimerRunnable)
         } else {
-            btnRecord.text = "\u25CF Rec Off"
-            txtRec.visibility = View.GONE
             mainHandler.removeCallbacks(recTimerRunnable)
+            btnRecord.text = "REC"
         }
     }
 
@@ -454,52 +714,147 @@ class MainActivity : AppCompatActivity() {
         return super.onKeyDown(keyCode, event)
     }
 
-    // -- UI helpers -----------------------------------------------------------
-    private fun highlightActive(active: CameraFeed) {
-        buttons.forEach { (feed, button) -> button.isSelected = (feed == active) }
-    }
-
     private fun showCover() { cover.visibility = View.VISIBLE }
     private fun hideCover() { cover.visibility = View.GONE }
 
+    // Full-screen SIYI MK32 manual viewer (the "?" HUD button). Overlays the
+    // activity without pausing it, so the video keeps running behind. Back or ✕
+    // closes it.
+    private fun showManual() {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        dialog.setContentView(R.layout.dialog_help)
+        dialog.window?.setLayout(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT)
+        dialog.findViewById<Button>(R.id.btn_help_close).setOnClickListener { dialog.dismiss() }
+        dialog.show()
+    }
+
+    private fun showReconnecting() {
+        txtStatus.text = "RECONNECTING ${currentFeed.label}…"
+        txtStatus.visibility = View.VISIBLE
+    }
+    private fun hideReconnecting() { txtStatus.visibility = View.GONE }
+
+    // Shared "this feed won't come up" path: keep the cover, park the twin, show a
+    // persistent indicator, and schedule the next retry. Called both on a hard
+    // RTSP failure and from the first-frame watchdog (connected but no video), so
+    // the screen never sits on indefinite black with no feedback.
+    private fun enterReconnecting() {
+        if (!surfaceReady) return
+        reconnecting = true
+        switching = false
+        frozen = false
+        showCover()
+        suspendTwinOverlay()
+        showReconnecting()
+        mainHandler.removeCallbacks(forceStartRunnable)
+        mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(firstFrameWatchdog)
+        mainHandler.removeCallbacks(stallWatchdog)
+        mainHandler.postDelayed(retryRunnable, RETRY_DELAY_MS)
+    }
+
+    // The 3D twin is a media-overlay GL surface, which the compositor can float
+    // ABOVE the plain-View cover — so during a feed switch its transparent pixels
+    // leak the old feed's last frame in the twin rectangle. Take it down for the
+    // black transition and restore it when the new feed's first frame renders.
+    // Both are no-ops when 3D is off; the flag keeps pause/resume balanced.
+    private fun suspendTwinOverlay() {
+        if (!twinVisible || twinSuspended) return
+        twinSuspended = true
+        glView.onPause()
+        glView.visibility = View.GONE
+    }
+
+    private fun resumeTwinOverlay() {
+        if (!twinVisible || !twinSuspended) return
+        twinSuspended = false
+        glView.visibility = View.VISIBLE
+        glView.onResume()
+    }
+
     // -- Lifecycle ------------------------------------------------------------
+    // The RTSP stream is torn down/restarted in onStop/onStart (true background),
+    // NOT onPause/onResume. Transient overlays — the screen-record consent dialog,
+    // permission prompts — only fire onPause, so the live video survives them
+    // without a black reflash. onPause/onResume handle only the audio/telemetry
+    // background housekeeping and the GL twin.
     override fun onResume() {
         super.onResume()
-        // Reconcile to the true state (e.g. recording stopped from the system bar
-        // while we were away). The start-race transient is corrected separately by
-        // ScreenRecordService.onStateChange, so this never stomps a fresh start.
         onRecordingStateChanged(ScreenRecordService.isRecording)
-        // Resting intercom state: audio on, mic off (until the user presses talk).
-        startListening()
-        if (surfaceReady) {
+        // Re-apply the intercom (default off on first launch). Never resume held.
+        talking = false
+        applyAudio()
+        // ONE socket on :9870 for battery + twin joints; released in onPause.
+        telemetryReceiver.start()
+        // SBUS mode feed on :9871 (separate port); also released in onPause.
+        sbusReceiver.start()
+        // Bring the GL twin back (paused in onPause). A restart after real
+        // background runs on a fresh surface, so there is no stale frame to guard.
+        if (twinVisible) {
+            twinSuspended = false
+            glView.visibility = View.VISIBLE
+            glView.onResume()
+        }
+        // If the stream survived a transient pause, reveal it (the cover was raised
+        // in onPause to blank the recents thumbnail).
+        if (surfaceReady && rtspView.isStarted()) hideCover()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        glView.onPause()
+        twinSuspended = false                 // GL surface is paused; state reset for resume
+        // Release :9870 so the dashboard can own it while we are backgrounded.
+        telemetryReceiver.stop()
+        // Release the SBUS mode socket too; stop the stale fallback timer.
+        sbusReceiver.stop()
+        mainHandler.removeCallbacks(modeStaleRunnable)
+        gimbal.stopMove()
+        // Drop mic/speaker in the background; state is re-applied in onResume.
+        talking = false
+        audioLink.setMicEnabled(false)
+        audioLink.setSpeakerEnabled(false)
+        // Blank the recents/multitasking thumbnail without stopping the stream.
+        showCover()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Restart if we were fully stopped but the surface survived; the usual
+        // background path recreates the surface, which restarts via surfaceCreated.
+        if (surfaceReady && !rtspView.isStarted()) {
             pendingFeed = currentFeed
             showCover()
             beginPendingFeed()
         }
     }
 
-    override fun onPause() {
-        super.onPause()
-        // Stream socket is released, but the screen recording keeps running.
+    override fun onStop() {
+        super.onStop()
+        // True background (screen off / home / a fully-obscuring activity like AIM).
         switching = false
         reconnecting = false
+        frozen = false
         mainHandler.removeCallbacks(forceStartRunnable)
         mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(firstFrameWatchdog)
+        mainHandler.removeCallbacks(stallWatchdog)
+        hideReconnecting()
         rtspView.stop()
-        // Halt the gimbal so it never keeps slewing while the app is backgrounded.
-        gimbal.stopMove()
-        // Release the mic/speaker so we don't hold the mic or play audio in the
-        // background; listening resumes in onResume.
-        talking = false
-        audioLink.setMicEnabled(false)
-        audioLink.setSpeakerEnabled(false)
-        updateTalkButton()
         showCover()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         ScreenRecordService.onStateChange = null
+        mainHandler.removeCallbacks(countdownRunnable)
+        rtspView.stop()                        // deterministic teardown if we skip onStop
+        // App closing: drop fire mode (the server also auto-zeroes after the
+        // socket drops, but stop explicitly so it happens immediately).
+        HeartbeatClient.stop()
         gimbal.close()
         audioLink.close()
     }
@@ -507,7 +862,22 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val LOW_LATENCY_SPS_REWRITE = false
         private const val START_TIMEOUT_MS = 800L
-        // Wait between reconnect attempts after a stream failure.
-        private const val RETRY_DELAY_MS = 1500L
+        private const val RETRY_DELAY_MS = 3000L
+        // Connect socket timeout (ms) — fail an offline camera fast, not ~5 s.
+        private const val SOCKET_TIMEOUT_MS = 2500
+        // Max wait for the first decoded frame after start() before we treat the
+        // feed as failed (camera booting / bad codec / stalled encoder).
+        private const val FIRST_FRAME_TIMEOUT_MS = 6000L
+        // Freeze detector: if no video NAL arrives for this long the picture has
+        // frozen (TCP head-of-line block), so cover it with black; we uncover the
+        // moment NALs resume. Aggressive for near-instant black — a false trip on
+        // jitter is just a brief flash, since recovery is immediate. Lower this for
+        // even faster black (risking flicker on a jittery link); raise it if a
+        // healthy feed flashes black. Must stay above the normal inter-frame gap.
+        private const val STALL_TIMEOUT_MS = 300L
+        private const val STALL_CHECK_MS = 100L
+        private const val FIRE_COUNTDOWN_MS = 15_000L
+        // SBUS mode feed is ~5 Hz (200 ms); ~12 missed packets → show "—".
+        private const val MODE_STALE_MS = 2500L
     }
 }

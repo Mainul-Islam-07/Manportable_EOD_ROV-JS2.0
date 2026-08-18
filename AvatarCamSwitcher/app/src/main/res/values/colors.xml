@@ -4,4 +4,6 @@
     <color name="active_green_stroke">#FF66BB6A</color>
     <color name="idle_fill">#33FFFFFF</color>
     <color name="idle_stroke">#55FFFFFF</color>
+    <!-- Adaptive launcher-icon background, sampled from JS2.0_V2.png's light tile. -->
+    <color name="ic_launcher_background">#EDEDED</color>
 </resources>

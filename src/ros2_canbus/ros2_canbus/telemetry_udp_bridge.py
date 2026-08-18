@@ -43,7 +43,7 @@ from rclpy.qos import (QoSProfile, ReliabilityPolicy, HistoryPolicy,
                        DurabilityPolicy)
 
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, Float32
+from std_msgs.msg import Bool, Float32, UInt8
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 
 # Decoders shared with the publisher side.  /motor_diagnostics omits the
@@ -61,22 +61,8 @@ DEFAULT_MK32_IP   = "192.168.144.20"   # <-- set to your MK32's fixed IP
 DEFAULT_MK32_PORT = 9870
 DEFAULT_RATE_HZ   = 5.0
 
-# Battery voltage -> percentage mapping (linear, clamped).
-#   <= BATTERY_MIN_V  -> 0 %
-#   >= BATTERY_MAX_V  -> 100 %
-BATTERY_MIN_V = 39.0
-BATTERY_MAX_V = 54.0
-
-# A fresh motor whose voltage is below this is treated as NOT-YET-INITIALISED
-# (0 / garbage during boot) and skipped, so the scan moves on to the next
-# motor instead of locking onto a bogus 0 V reading.  Real pack voltage on a
-# 39-54 V bus never sits this low while the robot is powered.
-BATTERY_PLAUSIBLE_MIN_V = 30.0
-
-# When no fresh motor has a valid voltage, keep reporting the LAST good
-# percentage for this long before falling back to null ("--" on the app).
-# Overridable via the ROS param 'battery_hold_s'.
-DEFAULT_BATTERY_HOLD_S = 4.0
+# Main-pack battery % is the real SOC from the JK-BD BMS (published on
+# /battery_soc by battery_bms.py); no motor-voltage estimate is used.
 
 # Topic names (match controller_config.json if you renamed them)
 TOPIC_DIAGNOSTICS   = "/motor_diagnostics"
@@ -122,25 +108,6 @@ DRIVE_MOTORS = {
 # =========================================================================
 
 
-def volts_to_pct(volts, lo=BATTERY_MIN_V, hi=BATTERY_MAX_V):
-    """Map a battery voltage to 0-100 %, clamped at both ends.
-
-    volts <= lo  -> 0 ; volts >= hi -> 100 ; linear in between.
-    Returns an int, or None if *volts* is not a finite number.
-    """
-    try:
-        v = float(volts)
-    except (TypeError, ValueError):
-        return None
-    if v != v:                       # NaN
-        return None
-    if v <= lo:
-        return 0
-    if v >= hi:
-        return 100
-    return int(round((v - lo) / (hi - lo) * 100.0))
-
-
 class TelemetryUdpBridge(Node):
 
     def __init__(self):
@@ -173,13 +140,16 @@ class TelemetryUdpBridge(Node):
         self._drive_mem_ok = None
         self._arm_mem_ok = None
 
-        # Battery hold-over: remember the last good % and when we saw it, so a
-        # brief dropout of ALL motors doesn't blank the indicator instantly.
-        self._last_batt_pct = None
-        self._last_batt_volts = None
-        self._last_batt_t = None          # monotonic time of last good reading
-        self.battery_hold_s = float(
-            self.declare_parameter("battery_hold_s", DEFAULT_BATTERY_HOLD_S).value)
+        # Main-pack battery: real SOC (%) + pack voltage from the JK-BD BMS
+        # (battery_bms.py -> /battery_soc, /battery_pack_v). None until a reading
+        # arrives -> sent as JSON null ("--" on the app). The BMS polls ~0.5 Hz,
+        # so hold the last value briefly before blanking on a serial gap.
+        self._soc_pct = None
+        self._soc_t = None
+        self._pack_v = None
+        self._pack_v_t = None
+        self.battery_soc_hold_s = float(
+            self.declare_parameter("battery_soc_hold_s", 10.0).value)
 
         # A motor's data is considered "live" if it updated within this many
         # seconds.  Per your spec: latest data within 500 ms = live.
@@ -215,6 +185,10 @@ class TelemetryUdpBridge(Node):
                                  self._on_drive_mem_v, batt_qos)
         self.create_subscription(Float32, TOPIC_ARM_MEM_V,
                                  self._on_arm_mem_v, batt_qos)
+
+        # Main-pack BMS: real SOC (%) and pack voltage (latched by battery_bms.py).
+        self.create_subscription(UInt8, "/battery_soc", self._on_soc, batt_qos)
+        self.create_subscription(Float32, "/battery_pack_v", self._on_pack_v, batt_qos)
 
         # -- fixed-rate sender --
         self.create_timer(1.0 / self.rate_hz, self._send_tick)
@@ -282,6 +256,14 @@ class TelemetryUdpBridge(Node):
     def _on_arm_mem_v(self, msg: Float32):
         self._arm_mem_volts = float(msg.data)
 
+    def _on_soc(self, msg: UInt8):
+        self._soc_pct = int(msg.data)
+        self._soc_t = time.monotonic()
+
+    def _on_pack_v(self, msg: Float32):
+        self._pack_v = float(msg.data)
+        self._pack_v_t = time.monotonic()
+
     # --------------------------------------------------------------- sender
 
     def _send_tick(self):
@@ -294,7 +276,6 @@ class TelemetryUdpBridge(Node):
         # OWN motors' arrival times, so arm and drive never mask each other.
         diag_out = {}
         fresh_arm, fresh_drive = set(), set()
-        battery_volts = None          # first fresh motor's bus voltage
         for name, d in self._diag.items():
             t = d.get("_t")
             age_ms = -1 if t is None else int((now - t) * 1000)
@@ -304,38 +285,22 @@ class TelemetryUdpBridge(Node):
             entry["fresh"]  = fresh
             diag_out[name] = entry
             if fresh:
-                # Battery: take the first fresh motor with a PLAUSIBLE voltage.
-                # All motors share the same DC bus, so any one is representative.
-                # A fresh motor still reading 0/garbage at boot is below the
-                # plausibility floor, so we skip it and keep scanning to the
-                # next motor instead of locking onto a bogus reading.
-                if battery_volts is None:
-                    try:
-                        v = float(d.get("voltage"))
-                    except (TypeError, ValueError):
-                        v = None
-                    if v is not None and v == v and v >= BATTERY_PLAUSIBLE_MIN_V:
-                        battery_volts = v
                 if name in ARM_MOTORS:
                     fresh_arm.add(name)
                 elif name in DRIVE_MOTORS:
                     fresh_drive.add(name)
 
-        # Hold-over: if we got a good reading this tick, remember it.  If not,
-        # keep reporting the last good % for up to battery_hold_s, then null.
-        if battery_volts is not None:
-            battery_pct = volts_to_pct(battery_volts)
-            self._last_batt_pct = battery_pct
-            self._last_batt_volts = battery_volts
-            self._last_batt_t = now
-        elif (self._last_batt_t is not None
-              and (now - self._last_batt_t) <= self.battery_hold_s):
-            # Within the hold window — repeat the last good values.
-            battery_pct = self._last_batt_pct
-            battery_volts = self._last_batt_volts
+        # Battery = real SOC from the JK-BD BMS (battery_bms.py -> /battery_soc).
+        # Held for battery_soc_hold_s across brief serial gaps; null (app shows
+        # "--") when the BMS is stale/absent — we no longer fall back to the
+        # motor-bus-voltage estimate.
+        if self._soc_t is not None and (now - self._soc_t) <= self.battery_soc_hold_s:
+            battery_pct = int(self._soc_pct)
         else:
-            # No fresh motor and hold window expired -> unknown.
             battery_pct = None
+        if self._pack_v_t is not None and (now - self._pack_v_t) <= self.battery_soc_hold_s:
+            battery_volts = self._pack_v
+        else:
             battery_volts = None
 
         # Active = explicit /*_active_motors list  OR  fresh diagnostics
@@ -347,9 +312,9 @@ class TelemetryUdpBridge(Node):
             "seq":   self._seq,
             "stamp": time.time(),          # wall clock seconds
             "fresh_window_ms": int(self.fresh_s * 1000),
-            # Battery state, derived from the first fresh motor's bus voltage.
-            # battery_pct is null when no fresh voltage is available, so a
-            # consumer can show "--" instead of a misleading 0 %.
+            # Battery state = real SOC (%) + pack voltage from the JK-BD BMS.
+            # battery_pct is null when the BMS is stale/absent, so the app shows
+            # "--" instead of a misleading number.
             "battery_pct":   battery_pct,
             "battery_volts": battery_volts,
             # Encoder memory-battery voltage per bus (volts) + OK flag.  null
