@@ -10,7 +10,7 @@ on /sbus/control.
 Channel map
 -----------
   CH1  – control_mode      (3-state: up=HOME  ctr=ARM  dn=DRIVE)
-  CH2  – operation_mode    (3-state: up=FIRING  ctr=ARMED  dn=DISARMED)
+  CH2  – operation_mode    (3-state: up=STAIR   ctr=ARMED  dn=DISARMED)
   CH3  – arm_y_cmd         (3-state: -1/0/+1)
   CH4  – arm_x_cmd         (3-state: -1/0/+1)
   CH5  – arm_z_cmd         (3-state: -1/0/+1)
@@ -44,7 +44,7 @@ Data integrity features
 
 Message field conventions (see sbus_interfaces/msg/SbusControl.msg):
   control_mode   : uint8   ARM=0  HOME=1  DRIVE=2
-  operation_mode : uint8   ARMED=0  FIRING=1  DISARMED=2
+  operation_mode : uint8   ARMED=0  STAIR=1  DISARMED=2
   arm_{x,y,z}_cmd: int8    -1 / 0 / +1  (integrated by coordinator)
   ee_pitch       : int8    -1/0/+1 delta (accumulated by coordinator)
   ee_roll        : int8    -1/0/+1 (raw, for external process)
@@ -86,7 +86,7 @@ _MODE_HOME  = SbusControl.CONTROL_MODE_HOME   # 1
 _MODE_DRIVE = SbusControl.CONTROL_MODE_DRIVE  # 2
 
 _OP_ARMED    = SbusControl.OPERATION_MODE_ARMED      # 0
-_OP_FIRING   = SbusControl.OPERATION_MODE_FIRING     # 1
+_OP_STAIR    = SbusControl.OPERATION_MODE_STAIR      # 1
 _OP_DISARMED = SbusControl.OPERATION_MODE_DISARMED   # 2
 
 # ── Frame integrity constants ─────────────────────────────────────────────────
@@ -216,7 +216,7 @@ def _classify_raw(channels: list) -> dict:
 
     Channel assignments:
       CH1  – control_mode         (3-state ud: up=HOME  ctr=ARM  dn=DRIVE)
-      CH2  – operation_mode       (3-state ud: up=FIRING  ctr=ARMED  dn=DISARMED)
+      CH2  – operation_mode       (3-state ud: up=STAIR   ctr=ARMED  dn=DISARMED)
       CH3  – arm_y / fwd          (3-state ud)
       CH4  – arm_x / turn         (3-state ud)
       CH5  – arm_z                (3-state ud)
@@ -287,8 +287,8 @@ class ChannelInterpreter:
         elif raw[1] == -1: mode = _MODE_DRIVE
         else:              mode = _MODE_ARM
 
-        # ── CH2: operation_mode (3-state: up=FIRING, center=ARMED, down=DISARMED)
-        if   raw[2] ==  1: op_mode = _OP_FIRING
+        # ── CH2: operation_mode (3-state: up=STAIR, center=ARMED, down=DISARMED)
+        if   raw[2] ==  1: op_mode = _OP_STAIR
         elif raw[2] == -1: op_mode = _OP_DISARMED
         else:              op_mode = _OP_ARMED
 
@@ -336,7 +336,8 @@ class ChannelInterpreter:
         camera_axis = self.camera_axis
 
         # ── Always-active fields ─────────────────────────────────────────────
-        ee_pitch      = raw[12]      # CH12: always pass through (FIRING needs it)
+        ee_pitch      = raw[12]      # CH12: always pass through
+                                     # (the /fire_mode firing mode needs it)
         ee_roll       = raw[6]       # CH6: raw -1/0/+1
         telescope_cmd = raw[11]      # CH11
         rear_flipper  = raw[9]       # CH9

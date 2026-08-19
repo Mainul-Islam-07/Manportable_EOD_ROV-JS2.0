@@ -17,12 +17,10 @@ Mode logic (see sbus_interfaces/msg/SbusControl.msg)
                      / ``"DRIVE"``
 
 .. note::
-   ``operation_mode == 1`` is **Stair Mode**.  The constant in SbusControl.msg
-   is still named ``OPERATION_MODE_FIRING`` — renaming it would force a rebuild
-   of ``sbus_interfaces`` and every node that imports it, so the stale name is
-   kept and the meaning is documented here instead.  The coordinator's own
-   FIRING state is a different feature entirely and is driven by ``/fire_mode``,
-   not by this field.
+   This node only *reports* the label.  The stair behaviour itself (stair pose,
+   flipper angles, arm latch-lock) lives in ``coordinator_node``.  The
+   coordinator's separate FIRING feature is unrelated to this field and is
+   driven by ``/fire_mode``.
 
 Until the first message arrives the mode defaults to ``DISARM`` (the safe
 assumption).
@@ -111,12 +109,8 @@ class SbusModeUdpBridge(Node):
 
         if msg.operation_mode == SbusControl.OPERATION_MODE_DISARMED:
             self._mode = "DISARM"
-        elif msg.operation_mode == SbusControl.OPERATION_MODE_FIRING:
-            # Value 1 is Stair Mode.  The .msg constant is still named
-            # OPERATION_MODE_FIRING for interface compatibility — renaming it
-            # would force a rebuild of sbus_interfaces and every node importing
-            # it.  The coordinator's own FIRING state is unrelated and comes
-            # from /fire_mode.
+        elif msg.operation_mode == SbusControl.OPERATION_MODE_STAIR:
+            # Label only — coordinator_node owns the actual stair behaviour.
             self._mode = "STAIR"
         elif msg.operation_mode == SbusControl.OPERATION_MODE_ARMED:
             # Unknown control_mode value -> hold last (defensive; shouldn't happen).

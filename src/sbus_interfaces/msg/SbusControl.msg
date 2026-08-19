@@ -5,7 +5,7 @@
 # -----------
 #   control_mode    : uint8  ARM=0  HOME=1  DRIVE=2
 #                     CH1 3-state switch
-#   operation_mode  : uint8  ARMED=0  FIRING=1  DISARMED=2
+#   operation_mode  : uint8  ARMED=0  STAIR=1  DISARMED=2
 #                     CH2 3-state switch
 #   3-state fields  : int8   -1 / 0 / +1
 #   2-state fields  : uint8   0 / 1
@@ -23,9 +23,12 @@ uint8 CONTROL_MODE_HOME  = 1
 uint8 CONTROL_MODE_DRIVE = 2
 uint8 control_mode
 
-# Operation mode  ARMED=0  FIRING=1  DISARMED=2
+# Operation mode  ARMED=0  STAIR=1  DISARMED=2
+# STAIR (CH2 up) puts the robot in the stair-climbing pose and then
+# locks the arm until the switch returns to ARMED.  (Was FIRING, which
+# nothing consumed; the app-driven firing mode uses /fire_mode instead.)
 uint8 OPERATION_MODE_ARMED    = 0
-uint8 OPERATION_MODE_FIRING   = 1
+uint8 OPERATION_MODE_STAIR    = 1
 uint8 OPERATION_MODE_DISARMED = 2
 uint8 operation_mode
 

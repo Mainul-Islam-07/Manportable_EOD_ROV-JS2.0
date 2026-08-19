@@ -60,6 +60,80 @@ coordinator:
     # to disable (e.g. when MoveIt isn't running or for bench testing).
     flipper_collision_check: true
 
+    # --- Flipper HOME sequence --------------------------------------------
+    # A HOME command now drives the flippers to zero as well as the arm.
+    # The flipper sequence is stepped by the flipper timer, so it runs in
+    # PARALLEL with the arm homing (which can spend up to 30 s in OMPL).
+    # The two flippers themselves move in SEQUENCE: front to zero first,
+    # then rear — the rear target is held at its measured position for the
+    # whole front phase.
+    #
+    # Set false to leave the flippers untouched by HOME (old behaviour).
+    # NOTE: FIRING entry (/fire_mode = 1) homes via the same code path, so
+    # enabling this also homes the flippers when firing mode is entered.
+    flipper_home_enable: true
+
+    # Ramp rate of the homing command, radians per flipper tick (20 Hz).
+    # 0.02 -> 0.4 rad/s, 4x the teleop rate (flipper_step 0.005).
+    # The command is still capped to flipper_ahead_limit from the MEASURED
+    # joint, so this is only a ceiling: whenever the motor is slower, the
+    # motor sets the pace and the command tracks it.  Raise it (e.g. 1.0)
+    # to let the motor run at its own CSP profile velocity; lower it for a
+    # gentler home.  Homing a flipper from 6.28 rad takes ~16 s at 0.02.
+    flipper_home_step: 0.02
+
+    # Arrival tolerance against the measured joint position, radians.
+    # A phase completes when the command has reached zero AND the measured
+    # joint is within this of zero.
+    flipper_home_tolerance: 0.02
+
+    # Per-group deadline, seconds.  On expiry the group gives up with an
+    # ERROR and the sequence moves on, so a stalled or blocked flipper can
+    # never prevent the rest of the sequence from running.  Size this above
+    # the worst-case travel time at flipper_home_step.
+    # NOTE: flipper_home_step / _tolerance / _timeout above apply to BOTH
+    # flipper sequences — the HOME one and the STAIR one below.
+    flipper_home_timeout: 20.0
+
+    # --- STAIR mode (CH2 up = operation_mode STAIR) -----------------------
+    # Repurposes the CH2 'FIRING' switch position, which nothing consumed.
+    # On entry the arm moves to the stair pose and the flippers move to the
+    # stair angle ONE AT A TIME — REAR first, then FRONT — so only one end
+    # of the robot is ever lifting.  (Note this is the reverse of the HOME
+    # order, which is front then rear.)  The arm and flipper legs run in
+    # parallel with each other.  Once both have arrived the arm LATCHES
+    # locked; drive and flippers stay live so the operator can climb and
+    # trim.  Only returning CH2 to ARMED releases it.
+    #
+    # Flipper stair angles, radians.  Defaults are +/-35 deg, in the same
+    # sign convention as flipper_ahead_limit and FLIPPER_LIMITS in the
+    # coordinator (front positive, rear negative).
+    #   +0.6109 rad = +35 deg      -0.6109 rad = -35 deg
+    stair_flipper_front:  0.6109
+    stair_flipper_rear:  -0.6109
+
+    # Arm stair pose, radians (metres for telescope), in ARM_JOINTS order:
+    #   [turret, shoulder, elbow, telescope, wrist_pan, wrist_roll]
+    # Currently the home pose (all zeros).  Replace with a dedicated stair
+    # pose when one is defined — nothing else needs to change.
+    stair_arm_joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # Backstop deadline for the whole stair pose, seconds.  If the arm and
+    # flippers have not both arrived by then the mode latches anyway (with
+    # an ERROR) rather than hanging half-entered.  Must comfortably exceed
+    # BOTH legs' worst cases, since they run in parallel:
+    #   arm     : OMPL budget (up to 30 s) + travel time
+    #   flippers: 2 x flipper_home_timeout (one per group, rear then front)
+    # At the defaults that is max(~40 s, 2 x 20 s) = 40 s, so 60 s leaves a
+    # real margin.  Raise this if you raise flipper_home_timeout.
+    stair_arm_timeout: 60.0
+
+    # Freeze the gripper along with the arm joints while stair mode is
+    # active.  The gripper sits on the arm bus and is physically part of
+    # the manipulator, so it defaults to following the arm freeze.  Set
+    # false to leave the claw operable during a stair climb.
+    stair_freeze_gripper: true
+
     # --- Arm position control ---------------------------------------------
     arm_step: 0.001                  # metres per tick (2 cm/s at 20 Hz)
     arm_tick_rate: 20.0              # Hz

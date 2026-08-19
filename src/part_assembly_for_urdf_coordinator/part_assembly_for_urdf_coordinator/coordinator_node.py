@@ -90,6 +90,18 @@ FLIPPER_LIMITS = {
     'rear_flipper_Joint':  (-6.28, 0.0),
 }
 
+# Flipper home pose: both flipper joints at URDF zero — the same all-zeros
+# reference HOME_JOINTS uses for the arm, and the pose the arm HOME fallback
+# already relies on being collision-free.
+HOME_FLIPPERS = {j: 0.0 for j in FLIPPER_JOINTS}
+
+# Accumulator attribute backing each flipper joint, so the sequence runner
+# can drive either joint generically.
+FLIPPER_POS_ATTR = {
+    'front_flipper_Joint': '_front_flipper_pos',
+    'rear_flipper_Joint':  '_rear_flipper_pos',
+}
+
 
 class State(Enum):
     IDLE = auto()
@@ -129,6 +141,15 @@ class CoordinatorNode(Node):
         self.declare_parameter('flipper_step')
         self.declare_parameter('flipper_rate')
         self.declare_parameter('flipper_collision_check')
+        self.declare_parameter('flipper_home_enable')
+        self.declare_parameter('flipper_home_step')
+        self.declare_parameter('flipper_home_tolerance')
+        self.declare_parameter('flipper_home_timeout')
+        self.declare_parameter('stair_flipper_front')
+        self.declare_parameter('stair_flipper_rear')
+        self.declare_parameter('stair_arm_joints')
+        self.declare_parameter('stair_arm_timeout')
+        self.declare_parameter('stair_freeze_gripper')
         self.declare_parameter('arm_step')
         self.declare_parameter('arm_tick_rate')
         self.declare_parameter('pitch_deadband')
@@ -169,6 +190,25 @@ class CoordinatorNode(Node):
         flipper_rate = self.get_parameter('flipper_rate').value
         self._flipper_collision_check = (
             self.get_parameter('flipper_collision_check').value)
+        self._flipper_home_enable = (
+            self.get_parameter('flipper_home_enable').value)
+        self._flipper_home_step = self.get_parameter('flipper_home_step').value
+        self._flipper_home_tol = (
+            self.get_parameter('flipper_home_tolerance').value)
+        self._flipper_home_timeout = (
+            self.get_parameter('flipper_home_timeout').value)
+        # --- STAIR mode ---------------------------------------------------
+        self._stair_front = self.get_parameter('stair_flipper_front').value
+        self._stair_rear = self.get_parameter('stair_flipper_rear').value
+        self._stair_arm_timeout = self.get_parameter('stair_arm_timeout').value
+        self._stair_freeze_gripper = (
+            self.get_parameter('stair_freeze_gripper').value)
+        _saj = list(self.get_parameter('stair_arm_joints').value)
+        if len(_saj) != len(ARM_JOINTS):
+            raise ValueError(
+                f'stair_arm_joints must have {len(ARM_JOINTS)} entries in '
+                f'ARM_JOINTS order {ARM_JOINTS}, got {len(_saj)}')
+        self._stair_arm_joints = {j: float(v) for j, v in zip(ARM_JOINTS, _saj)}
         self._arm_step = self.get_parameter('arm_step').value
         arm_tick_rate = self.get_parameter('arm_tick_rate').value
         self._pitch_deadband = self.get_parameter('pitch_deadband').value
@@ -368,6 +408,32 @@ class CoordinatorNode(Node):
         # on the validity service.  Only one tick may run the collision
         # check at a time; others early-return without committing.
         self._flipper_check_busy = threading.Lock()
+
+        # --- Flipper sequence runner --------------------------------------
+        # Drives the flippers to a target pose, stepped by _flipper_tick so
+        # it runs in PARALLEL with whatever the worker thread is doing to
+        # the arm.  `groups` is a list of joint-name tuples processed in
+        # order; joints inside one group move together.  HOME uses
+        # [(front,), (rear,)] — front to zero, then rear.  STAIR uses
+        # [(rear,), (front,)] — rear to 35 deg, then front (reverse order,
+        # so only one end lifts at a time).  Label is None when no
+        # sequence is running.
+        self._flipper_seq_label = None         # None | 'HOME' | 'STAIR'
+        self._flipper_seq_groups = []          # [(joint, ...), ...]
+        self._flipper_seq_targets = {}         # joint -> target position
+        self._flipper_seq_index = 0            # active group
+        self._flipper_seq_deadline = 0.0       # monotonic deadline, this group
+        self._flipper_seq_last_log = 0.0       # log throttle while blocked
+        self._flipper_seq_final_sent = False   # final value sent, this group
+
+        # --- STAIR mode ---------------------------------------------------
+        # Triggered by the CH2 'FIRING' switch position, repurposed: the arm
+        # goes to the stair pose and the flippers to +/-35 deg, then the arm
+        # LATCHES locked until operation_mode returns to ARMED.  Drive and
+        # flippers stay live throughout so the operator can climb and trim.
+        self._stair_state = None               # None | 'MOVING' | 'HOLD'
+        self._stair_arm_done = False           # arm pose command dispatched
+        self._stair_deadline = 0.0             # arm-arrival deadline
 
         # --- Event queue (thread-safe) ------------------------------------
         self._event_queue = SimpleQueue()
@@ -587,6 +653,13 @@ class CoordinatorNode(Node):
         self._sjs_drive_right = float(msg.drive_right)
         self._sjs_claw_cmd    = float(msg.claw_cmd)
 
+        # --- STAIR mode (CH2 up) ------------------------------------------
+        # Owns the whole command set while active: handles its own entry,
+        # release and masking, and short-circuits the normal ARM/HOME/DRIVE
+        # handling below.
+        if self._update_stair_mode(msg):
+            return
+
         # --- FIRING active: ignore control_mode, only process pitch -------
         # When firing mode is active (triggered by /fire_mode topic), zero
         # all arm commands except ee_pitch (which drives wrist_pan in
@@ -664,6 +737,153 @@ class CoordinatorNode(Node):
             self.get_logger().warn('HOME command accepted.')
             return
 
+    def _update_stair_mode(self, msg: SbusControl) -> bool:
+        """Handle STAIR mode entry, release and command masking.
+
+        STAIR is the CH2-up switch position (operation_mode ==
+        OPERATION_MODE_STAIR), repurposed from the old SBUS FIRING trigger
+        that nothing consumed.  On entry the arm moves to the stair pose and
+        the flippers to the stair angle one at a time (rear, then front),
+        the two legs running in parallel; once both arrive the arm LATCHES
+        locked.  Only ARMED releases it.
+
+        Drive and flippers stay live throughout, so the operator can climb
+        the stairs and trim the flippers with the arm held safely put.
+
+        Returns True when stair mode owns the command set, in which case
+        _on_sbus skips its normal handling entirely.
+        """
+        op = msg.operation_mode
+
+        if (op == SbusControl.OPERATION_MODE_STAIR
+                and self._stair_state is None):
+            self._enter_stair_mode()
+        elif (op == SbusControl.OPERATION_MODE_ARMED
+                and self._stair_state is not None):
+            self._exit_stair_mode()
+
+        if self._stair_state is None:
+            return False
+
+        # ----- masking while stair mode is active --------------------------
+        # Drive stays live for the whole of stair mode — the point of the
+        # pose is to drive up the stairs in it.
+        self._sjs_drive_left  = float(msg.drive_left)
+        self._sjs_drive_right = float(msg.drive_right)
+        # The gripper sits on the arm bus, so it follows the arm freeze
+        # policy rather than the drive one.
+        if self._stair_freeze_gripper:
+            self._sjs_claw_cmd = 0.0
+
+        # The arm is frozen for all of stair mode: while MOVING the pose
+        # move owns it, and once HOLD latches the operator stays locked out
+        # until operation_mode returns to ARMED.  Zeroing _ee_roll_cmd here
+        # also freezes the wrist_roll passthrough on /sbus/joint_states.
+        with self._arm_cmd_lock:
+            self._arm_x_cmd = 0
+            self._arm_y_cmd = 0
+            self._arm_z_cmd = 0
+            self._ee_pitch_cmd = 0
+            self._ee_roll_cmd = 0
+            self._telescope_cmd = 0
+
+        # Flippers: owned by the pose sequence while MOVING, handed back to
+        # the operator once the pose has latched.
+        with self._flipper_cmd_lock:
+            if self._stair_state == 'HOLD':
+                self._front_flipper_cmd = msg.front_flipper
+                self._rear_flipper_cmd = msg.rear_flipper
+            else:
+                self._front_flipper_cmd = 0
+                self._rear_flipper_cmd = 0
+        return True
+
+    def _enter_stair_mode(self):
+        """Begin the stair pose: flippers to the stair angle (rear first,
+        then front, on the flipper timer) and the arm to the stair pose
+        (through the worker, on the same priority path HOME uses).  The arm
+        and flipper legs run in parallel with each other; _arm_tick latches
+        HOLD once both have finished."""
+        self._stair_state = 'MOVING'
+        self._stair_arm_done = False
+        self._stair_deadline = time.monotonic() + self._stair_arm_timeout
+        self.get_logger().warn(
+            f'STAIR mode entered: arm -> stair pose, flippers -> '
+            f'front {math.degrees(self._stair_front):+.1f} deg / '
+            f'rear {math.degrees(self._stair_rear):+.1f} deg. '
+            f'Arm locks once the pose is reached; drive and flippers '
+            f'stay live.')
+
+        # Flipper leg — both flippers move together.
+        self._start_flipper_stair()
+
+        # Arm leg — same pre-emption path as HOME.  _home_requested aborts
+        # any in-flight IK/planning; _pending_goal tells the worker which
+        # priority pose to actually run (see _process_priority_goal).
+        with self._goal_lock:
+            self._pending_goal = 'STAIR'
+        self._home_requested.set()
+        with self._arm_handle_lock:
+            handle = self._current_arm_goal_handle
+            self._current_arm_goal_handle = None
+        if handle is not None:
+            try:
+                handle.cancel_goal_async()
+                self.get_logger().info('STAIR: cancelled running trajectory.')
+            except Exception as e:
+                self.get_logger().warn(f'STAIR cancel failed: {e}')
+        self._last_goal_display = {'stair_pose': True}
+        self._last_goal_time = datetime.now().isoformat(timespec='seconds')
+        self._event_queue.put(EventType.GOAL)
+
+    def _exit_stair_mode(self):
+        """Release the stair latch (operation_mode back to ARMED).
+
+        Nothing moves on release.  Any still-running flipper sequence is
+        abandoned in place, and the arm accumulators are re-anchored to the
+        ACTUAL joint positions so the operator resumes from reality rather
+        than from whatever pose the coordinator last assumed.  Re-arm is
+        required so a stick held through the release cannot jerk the arm.
+        """
+        was = self._stair_state
+        self._stair_state = None
+        self._stair_arm_done = False
+        self._abort_flipper_sequence('STAIR released')
+
+        with self._js_lock:
+            js = self._last_joint_state
+        if js is not None:
+            self._initial_state_synced = False
+            self._sync_state_from_joints(js)
+        else:
+            self.get_logger().warn(
+                'STAIR release: no joint state to re-sync from; '
+                'accumulators left at the stair pose.')
+        self._rearm_required = True
+        self._at_home = False
+        self.get_logger().warn(
+            f'STAIR mode released from {was} (operation_mode ARMED) — '
+            f'accumulators re-synced to actual, re-arm required '
+            f'(centre all sticks).')
+
+    def _arm_at_pose(self, target, tol):
+        """True when every arm joint is measured within *tol* of *target*.
+
+        wrist_roll is excluded for the same reason the goal-arrival check
+        excludes it: it is a direct operator passthrough that legitimately
+        lags its commanded value.
+        """
+        with self._js_lock:
+            js = self._last_joint_state
+        if js is None:
+            return False
+        phys = {n: js.position[i] for i, n in enumerate(js.name)
+                if n in ARM_JOINTS}
+        if len(phys) != len(ARM_JOINTS):
+            return False
+        return all(abs(phys[j] - target[j]) <= tol
+                   for j in ARM_JOINTS if j != 'wrist_roll_Joint')
+
     def _on_fire_mode(self, msg: UInt8):
         """Handle firing mode transitions from the /fire_mode topic.
 
@@ -673,6 +893,10 @@ class CoordinatorNode(Node):
         Replaces the SBUS operation_mode-based FIRING trigger.  The SBUS
         callback still provides the ee_pitch stick input that drives
         wrist_pan during firing — this callback only controls entry/exit.
+
+        Flipper policy: firing mode homes the ARM only.  The flippers never
+        move automatically on entry, during, or on exit of firing mode —
+        they respond to operator stick commands and nothing else.
         """
         fire = msg.data == 1
 
@@ -681,6 +905,10 @@ class CoordinatorNode(Node):
             self._firing_pending = True
             self.get_logger().warn(
                 'FIRING mode (via /fire_mode): homing arm first...')
+            # Firing homes the ARM only.  If a flipper sequence from an
+            # earlier HOME is still running, abort it here — for the whole
+            # of firing mode the flippers move only on operator command.
+            self._abort_flipper_sequence('FIRING mode entered')
             with self._goal_lock:
                 self._pending_goal = 'HOME'
             self._home_requested.set()
@@ -911,6 +1139,8 @@ class CoordinatorNode(Node):
             'firing_active': self._firing_active,
             'firing_wrist_pan': round(self._firing_wrist_pan, 3),
             'watchdog_triggered': self._watchdog_triggered,
+            'flipper_seq': self._flipper_seq_label,
+            'stair_state': self._stair_state,
         }
         msg = String()
         msg.data = json.dumps(diag)
@@ -1105,6 +1335,12 @@ class CoordinatorNode(Node):
             self._front_flipper_cmd = 0
             self._rear_flipper_cmd = 0
 
+        # Abort any in-flight flipper HOME.  The watchdog contract is to
+        # cancel all motion and hold, and the homing sequence does not read
+        # the (now zeroed) operator commands, so it would otherwise keep
+        # driving the flippers straight through an RC link loss.
+        self._abort_flipper_sequence('SBUS watchdog')
+
         # Zero drive/claw passthrough so /sbus/joint_states publishes
         # safe-stop values immediately, not after the old 60 s timeout.
         self._sjs_drive_left  = 0.0
@@ -1231,6 +1467,17 @@ class CoordinatorNode(Node):
         """
         # Joint-state feedback watchdog: block if no feedback
         if self._js_watchdog_triggered:
+            return
+
+        # A running sequence (HOME or STAIR) owns the flippers.  Operator
+        # stick input is ignored until it finishes or times out, matching
+        # the arm's "once HOME starts, it completes" policy.
+        # Note _prev_{front,rear}_flipper_cmd are deliberately NOT updated
+        # while a sequence runs, so a stick held throughout reads as a fresh
+        # command on the first tick afterwards and snaps the accumulator to
+        # actual before moving.
+        if self._flipper_seq_label is not None:
+            self._flipper_seq_tick()
             return
 
         with self._flipper_cmd_lock:
@@ -1467,6 +1714,237 @@ class CoordinatorNode(Node):
         }
 
     # ======================================================================
+    # Flipper sequence runner (parallel to the arm; groups run in order)
+    # ======================================================================
+
+    def _flipper_joint_position(self, jname):
+        """Measured position of one flipper joint from the latest joint
+        state, or None if the joint state is missing or lacks that joint."""
+        with self._js_lock:
+            js = self._last_joint_state
+        if js is None:
+            return None
+        for i, n in enumerate(js.name):
+            if n == jname:
+                return js.position[i]
+        return None
+
+    def _start_flipper_sequence(self, label, targets, groups):
+        """Begin a flipper sequence.
+
+        targets : {joint_name: position}
+        groups  : list of joint-name tuples, processed in order.  Joints
+                  within a group move together; the next group starts only
+                  once the current one has finished or timed out.
+
+        Called from the worker thread; stepped by _flipper_tick on the
+        executor, so it advances in parallel with the arm rather than
+        blocking it.
+        """
+        # Start both accumulators from the measured positions, so moving
+        # joints ramp from reality and held joints target where they
+        # actually are (nothing to correct on the joints that stay put).
+        self._snap_flipper_accumulator_to_actual(sync_front=True,
+                                                 sync_rear=True)
+        self._flipper_seq_targets = dict(targets)
+        self._flipper_seq_groups = [tuple(g) for g in groups]
+        self._flipper_seq_index = 0
+        self._flipper_seq_final_sent = False
+        self._flipper_seq_deadline = (
+            time.monotonic() + self._flipper_home_timeout)
+        self._flipper_seq_label = label      # set LAST — tick reads this
+
+        def short(j):
+            return j.replace('_flipper_Joint', '')
+        order = ' then '.join('+'.join(short(j) for j in g)
+                              for g in self._flipper_seq_groups)
+        tgt = '  '.join(f'{short(j)}={targets[j]:+.4f}' for j in sorted(targets))
+        self.get_logger().warn(
+            f'Flipper {label} sequence started: {order}  ({tgt}, '
+            f'step={self._flipper_home_step:.3f} rad/tick, '
+            f'tol={self._flipper_home_tol:.3f} rad, '
+            f'timeout={self._flipper_home_timeout:.1f}s per group).')
+
+    def _start_flipper_home(self):
+        """Flipper leg of a HOME command: front to zero first, then rear.
+        No-op when flipper_home_enable is false."""
+        if not self._flipper_home_enable:
+            return
+        self._start_flipper_sequence(
+            'HOME', dict(HOME_FLIPPERS),
+            [('front_flipper_Joint',), ('rear_flipper_Joint',)])
+
+    def _start_flipper_stair(self):
+        """Flipper leg of STAIR mode: one flipper at a time, REAR first and
+        then FRONT, so only one end of the robot is ever lifting.
+
+        Note the order is the reverse of HOME's (front then rear).  Always
+        runs — the stair pose is the whole point of the mode, so it is not
+        gated on flipper_home_enable."""
+        self._start_flipper_sequence(
+            'STAIR',
+            {'front_flipper_Joint': self._stair_front,
+             'rear_flipper_Joint':  self._stair_rear},
+            [('rear_flipper_Joint',), ('front_flipper_Joint',)])
+
+    def _abort_flipper_sequence(self, reason: str):
+        """Stop the active flipper sequence early.  Accumulators are left
+        where they are, so the flippers hold their current commanded
+        position rather than snapping anywhere."""
+        if self._flipper_seq_label is None:
+            return
+        label = self._flipper_seq_label
+        self._flipper_seq_label = None
+        # Cancel the outstanding command: the last dispatched target can be
+        # up to flipper_ahead_limit beyond the measured position, so without
+        # this the motor would keep driving to it and complete up to ~0.05
+        # rad of sequence-commanded motion AFTER the abort.  Re-dispatching
+        # the measured position stops the flipper where it actually is.
+        self._snap_flipper_accumulator_to_actual(sync_front=True,
+                                                 sync_rear=True)
+        self._send_flipper_trajectory()
+        self._prev_front_flipper_cmd = 0
+        self._prev_rear_flipper_cmd = 0
+        self.get_logger().warn(
+            f'Flipper {label} sequence aborted: {reason}. '
+            f'Holding at measured position.')
+
+    def _flipper_seq_tick(self):
+        """One step of the active flipper sequence.  Called from
+        _flipper_tick while _flipper_seq_label is set.
+
+        Every joint in the active group ramps toward its target at
+        flipper_home_step per tick; joints outside the group hold at their
+        current accumulator value.  Each proposal is clamped to the joint's
+        configured range and then capped to flipper_ahead_limit from the
+        MEASURED position, so the command can never run away from the motor
+        and a slow motor simply sets the pace.
+
+        A group completes when every joint in it has reached its target AND
+        been measured within flipper_home_tolerance of it, or when the group
+        deadline expires — loud, but not fatal, so one stuck flipper cannot
+        block the rest of the sequence.
+        """
+        label = self._flipper_seq_label
+        group = self._flipper_seq_groups[self._flipper_seq_index]
+
+        # ----- propose a new command for each joint in the active group ----
+        proposals = {}
+        phys_now = {}
+        for jname in group:
+            target = self._flipper_seq_targets[jname]
+            cur = getattr(self, FLIPPER_POS_ATTR[jname])
+            step = self._flipper_home_step
+            if abs(cur - target) <= step:
+                proposed = target
+            else:
+                proposed = cur - math.copysign(step, cur - target)
+
+            # Range clamp FIRST, physical cap LAST, so the cap always has the
+            # final say and the command can never jump more than
+            # flipper_ahead_limit from the measured joint — even if the
+            # configured range disagrees with what the hardware reports.
+            lo, hi = FLIPPER_LIMITS[jname]
+            proposed = max(lo, min(hi, proposed))
+            phys = self._flipper_joint_position(jname)
+            phys_now[jname] = phys
+            if phys is not None:
+                fl = self._flipper_ahead_limit
+                proposed = max(phys - fl, min(phys + fl, proposed))
+            proposals[jname] = proposed
+
+        changed = any(
+            abs(proposals[j] - getattr(self, FLIPPER_POS_ATTR[j])) > 1e-9
+            for j in group)
+
+        # ----- one combined collision check for the whole group ------------
+        if self._flipper_collision_check and changed:
+            if not self._flipper_check_busy.acquire(blocking=False):
+                return              # a check is already in flight; hold
+            try:
+                jd = self._build_flipper_check_state(
+                    proposals.get('front_flipper_Joint',
+                                  self._front_flipper_pos),
+                    proposals.get('rear_flipper_Joint',
+                                  self._rear_flipper_pos))
+                safe = (jd is not None and self._check_collision(
+                    jd, group_name='',
+                    timeout_sec=self._FLIPPER_VALIDITY_TIMEOUT))
+            finally:
+                self._flipper_check_busy.release()
+            if not safe:
+                now = time.monotonic()
+                if now - self._flipper_seq_last_log > 1.0:
+                    self._flipper_seq_last_log = now
+                    self.get_logger().warn(
+                        f'Flipper {label}: motion held by collision check '
+                        f'(or validity timeout) — waiting for it to clear '
+                        f'or for the group to time out.')
+                # Hold every joint in the group at its current command.
+                proposals = {j: getattr(self, FLIPPER_POS_ATTR[j])
+                             for j in group}
+
+        for jname, value in proposals.items():
+            setattr(self, FLIPPER_POS_ATTR[jname], value)
+
+        # ----- dispatch ----------------------------------------------------
+        # Rate-limited exactly like teleop, plus ONE guaranteed send on the
+        # tick the group lands on target so the final exact value cannot be
+        # swallowed by the rate limiter.  _flipper_seq_final_sent keeps that
+        # from repeating every tick while we wait for the motors to arrive.
+        at_target = all(
+            abs(proposals[j] - self._flipper_seq_targets[j]) <= 1e-9
+            for j in group)
+        self._flipper_tick_count += 1
+        send = self._flipper_tick_count >= self._flipper_send_interval
+        if at_target and not self._flipper_seq_final_sent:
+            self._flipper_seq_final_sent = True
+            send = True
+        if send:
+            self._flipper_tick_count = 0
+            self._send_flipper_trajectory()
+
+        # ----- group completion --------------------------------------------
+        arrived = at_target and all(
+            phys_now[j] is None
+            or abs(phys_now[j] - self._flipper_seq_targets[j])
+            <= self._flipper_home_tol
+            for j in group)
+        timed_out = time.monotonic() > self._flipper_seq_deadline
+        if not (arrived or timed_out):
+            return
+
+        n_groups = len(self._flipper_seq_groups)
+        detail = '  '.join(
+            j.replace('_flipper_Joint', '') + '='
+            + (f'{phys_now[j]:+.3f}' if phys_now[j] is not None else 'unknown')
+            for j in group)
+        if arrived:
+            self.get_logger().info(
+                f'Flipper {label}: group {self._flipper_seq_index + 1}/'
+                f'{n_groups} at target ({detail}).')
+        else:
+            self.get_logger().error(
+                f'Flipper {label}: group {self._flipper_seq_index + 1}/'
+                f'{n_groups} TIMEOUT after {self._flipper_home_timeout:.1f}s '
+                f'({detail}, tolerance {self._flipper_home_tol:.3f}). '
+                f'Giving up on this group and moving on.')
+
+        self._flipper_seq_index += 1
+        if self._flipper_seq_index < n_groups:
+            self._flipper_seq_final_sent = False
+            self._flipper_seq_deadline = (
+                time.monotonic() + self._flipper_home_timeout)
+            return
+
+        self._flipper_seq_label = None
+        # Force the next operator command to read as "fresh" so it snaps the
+        # accumulator to actual before moving (see _flipper_tick).
+        self._prev_front_flipper_cmd = 0
+        self._prev_rear_flipper_cmd = 0
+        self.get_logger().warn(f'Flipper {label} sequence complete.')
+
+    # ======================================================================
     # Arm integration tick (runs on executor timer)
     # ======================================================================
 
@@ -1476,12 +1954,43 @@ class CoordinatorNode(Node):
         (direct wrist_pan control).  Does nothing while HOME is in
         flight or re-arm is pending."""
 
+        # STAIR: latch into HOLD once BOTH legs of the stair pose have
+        # finished (arm pose commanded and physically arrived, flipper
+        # sequence complete), or once the backstop deadline expires.  Pure
+        # state evaluation, so it runs even while a watchdog blocks motion
+        # below and cannot leave the mode stuck half-entered.
+        if self._stair_state == 'MOVING':
+            timed_out = time.monotonic() > self._stair_deadline
+            flippers_done = self._flipper_seq_label is None
+            arm_done = self._stair_arm_done and self._arm_at_pose(
+                self._stair_arm_joints, self._goal_arrival_tolerance)
+            if (flippers_done and arm_done) or timed_out:
+                self._stair_state = 'HOLD'
+                if timed_out and not (flippers_done and arm_done):
+                    self.get_logger().error(
+                        f'STAIR pose TIMEOUT after '
+                        f'{self._stair_arm_timeout:.1f}s '
+                        f'(arm_done={arm_done} flippers_done={flippers_done}) '
+                        f'— latching anyway. Arm LOCKED until '
+                        f'operation_mode returns to ARMED.')
+                else:
+                    self.get_logger().warn(
+                        'STAIR pose reached — arm LOCKED until '
+                        'operation_mode returns to ARMED. '
+                        'Drive and flippers remain live.')
+
         # Watchdog: if RC link lost, block all motion
         if self._watchdog_triggered:
             return
 
         # Joint-state feedback watchdog: block if no feedback
         if self._js_watchdog_triggered:
+            return
+
+        # STAIR owns the arm for the whole mode — no accumulation, no
+        # dispatch, regardless of what the sticks say.  (_on_sbus already
+        # zeroes the arm commands; this is the belt-and-braces guard.)
+        if self._stair_state is not None:
             return
 
         # While HOME is being processed, don't integrate — HOME wins.
@@ -1928,10 +2437,15 @@ class CoordinatorNode(Node):
             self._process_home()
             return
 
-        # Check HOME before starting (e.g. HOME arrived while queued)
+        if goal == 'STAIR':
+            self._process_stair()
+            return
+
+        # Check for a priority pose before starting (e.g. one arrived while
+        # this goal was queued)
         if self._home_requested.is_set():
-            self.get_logger().info('Goal aborted: HOME requested.')
-            self._process_home()
+            self.get_logger().info('Goal aborted: priority pose requested.')
+            self._process_priority_goal()
             return
 
         x, y, z = goal
@@ -1949,8 +2463,9 @@ class CoordinatorNode(Node):
             x, y, z, ee_roll=ee_roll,
             ee_pitch=ee_pitch, ee_telescope=ee_telescope)
         if self._home_requested.is_set():
-            self.get_logger().info('VALIDATE aborted: HOME requested.')
-            self._process_home()
+            self.get_logger().info(
+                'VALIDATE aborted: priority pose requested.')
+            self._process_priority_goal()
             return
         if ik_solution is None:
             self._rollback(f'IK unreachable at ({x:.3f}, {y:.3f}, {z:.3f})')
@@ -1976,8 +2491,9 @@ class CoordinatorNode(Node):
         trajectory = self._build_single_point_trajectory(ik_solution)
 
         if self._home_requested.is_set():
-            self.get_logger().info('PLANNING aborted: HOME requested.')
-            self._process_home()
+            self.get_logger().info(
+                'PLANNING aborted: priority pose requested.')
+            self._process_priority_goal()
             return
         if trajectory is None:
             self._rollback(
@@ -2097,6 +2613,138 @@ class CoordinatorNode(Node):
 
         self.state = State.IDLE
 
+    def _process_priority_goal(self):
+        """Run whichever priority pose is pending.  HOME and STAIR share the
+        _home_requested event as their pre-emption signal, so the pending
+        goal is what distinguishes them."""
+        with self._goal_lock:
+            pending = self._pending_goal
+        if pending == 'STAIR':
+            self._process_stair()
+        else:
+            self._process_home()
+
+    def _move_arm_to_pose(self, target_joints, label='HOME'):
+        """Plan (with retries) and execute a joint-space move to
+        *target_joints*, falling back to direct joint-space interpolation
+        when OMPL cannot find a path.  Shared by HOME and STAIR.
+
+        Leaves _latest_arm_joint_target set to the commanded pose so the
+        /arm_joint_commands stream — which is what actually drives the real
+        hardware — carries the pose too, not just the action.
+        """
+        self.state = State.PLANNING
+        self._planning_attempts = 0
+
+        # Multiple retries with increasing planning time.  This handles
+        # configurations that are hard to plan from (e.g. wrist_roll at pi
+        # from a previous IK).
+        trajectory = None
+        timeouts = [5.0, 10.0, 15.0]
+        for i, timeout in enumerate(timeouts):
+            self.get_logger().info(
+                f'{label} planning attempt {i+1}/{len(timeouts)} '
+                f'(timeout={timeout}s)')
+            trajectory = self._plan_to_joint_state(
+                target_joints, interruptible=False, timeout_override=timeout)
+            if trajectory is not None:
+                break
+            self.get_logger().warn(
+                f'{label} planning attempt {i+1} failed, '
+                f'{"retrying..." if i < len(timeouts)-1 else "giving up."}')
+
+        if trajectory is not None:
+            self.get_logger().info(f'{label}: using planned trajectory.')
+        else:
+            # OMPL exhausted — fall back to direct joint-space interpolation.
+            # No collision checking: the operator asked for a priority pose.
+            self.get_logger().warn(
+                f'{label}: OMPL failed — falling back to direct trajectory.')
+            trajectory = self._build_direct_joint_trajectory(
+                target_joints, label=label)
+
+        self.state = State.EXECUTING
+        self._execute_trajectory(trajectory, is_home=True)
+
+        # Keep the arm joint command topic in sync with the action.  A
+        # priority pose bypasses the IK pipeline that would otherwise update
+        # this, so without the explicit assignment /arm_joint_commands would
+        # keep publishing the pre-move joint positions and a hardware bridge
+        # subscribed only to the topic would never see the pose.
+        self._latest_arm_joint_target = dict(target_joints)
+
+    def _anchor_accumulators_to_pose(self, joints):
+        """Reset the operator accumulators to a commanded joint pose.
+
+        Position anchors to FK of the pose (so it stays correct for any
+        pose, not just home), and pitch/roll/telescope invert the same
+        relations _sync_state_from_joints uses.
+        """
+        try:
+            F = fk_mod.fk(joints['turret_Joint'], joints['shoulder_Joint'],
+                          joints['elbow_Joint'], joints['telescope_Joint'],
+                          joints['wrist_pan_Joint'],
+                          joints['wrist_roll_Joint'])
+            wp = fk_mod.pos(F, 'wrist_pan')
+            anchor = (float(wp[0]), float(wp[1]), float(wp[2]))
+        except Exception as e:
+            self.get_logger().warning(
+                f'Pose anchor FK failed ({e}); falling back to the '
+                f'configured home_position.')
+            anchor = self._home_pos
+
+        pitch = -(joints['wrist_pan_Joint'] + joints['shoulder_Joint']
+                  + joints['elbow_Joint'])
+        roll = joints['wrist_roll_Joint']
+        tele = joints['telescope_Joint']
+
+        self._current_goal = anchor
+        self._last_valid_goal = anchor
+        self._last_accepted_goal = anchor
+        self._current_pitch = pitch
+        self._last_valid_pitch = pitch
+        self._last_dispatched_pitch = pitch
+        self._pending_pitch = 0.0
+        self._current_roll = roll
+        self._last_valid_roll = roll
+        self._last_dispatched_roll = roll
+        self._pending_roll = 0.0
+        self._current_telescope = tele
+        self._last_valid_telescope = tele
+        self._last_dispatched_telescope = tele
+        self._pending_telescope = 0.0
+
+    def _process_stair(self):
+        """STAIR arm leg: move the arm to the stair pose.
+
+        The flipper leg was started at stair entry and is running on the
+        flipper timer, so it advances in parallel with the planning here.
+        _arm_tick latches HOLD once both legs report done.
+        """
+        self._home_requested.clear()          # consume the flag
+        self.get_logger().info(
+            'Processing STAIR: draining queue, planning arm pose...')
+
+        with self._goal_lock:
+            self._pending_goal = None
+        while not self._event_queue.empty():
+            try:
+                self._event_queue.get_nowait()
+            except Empty:
+                break
+
+        target = dict(self._stair_arm_joints)
+        self._move_arm_to_pose(target, label='STAIR')
+        self._anchor_accumulators_to_pose(target)
+
+        # The arm no longer sits at the home pose (unless the stair pose IS
+        # home), so a later HOME must not be deduplicated away.
+        self._at_home = False
+        self._stair_arm_done = True
+        self.state = State.IDLE
+        self.get_logger().info(
+            'STAIR arm pose sent; waiting for arrival to latch.')
+
     def _process_home(self):
         """HOME command: bypass IK, plan directly to all-joints-zero.
         Runs non-interruptibly — once HOME starts, it completes.
@@ -2114,50 +2762,23 @@ class CoordinatorNode(Node):
             except Empty:
                 break
 
-        self.state = State.PLANNING
-        self._planning_attempts = 0
-
-        # HOME gets multiple retries with increasing planning time.
-        # This handles cases where the arm is in a configuration that's
-        # hard to plan from (e.g. wrist_roll at π from a previous IK).
-        trajectory = None
-        home_timeouts = [5.0, 10.0, 15.0]
-        for i, timeout in enumerate(home_timeouts):
-            self.get_logger().info(
-                f'HOME planning attempt {i+1}/{len(home_timeouts)} '
-                f'(timeout={timeout}s)')
-            trajectory = self._plan_to_joint_state(
-                HOME_JOINTS, interruptible=False, timeout_override=timeout)
-            if trajectory is not None:
-                break
-            self.get_logger().warn(
-                f'HOME planning attempt {i+1} failed, '
-                f'{"retrying..." if i < len(home_timeouts)-1 else "giving up."}')
-
-        if trajectory is not None:
-            self.get_logger().info('HOME: using planned trajectory.')
-        else:
-            # OMPL exhausted — fall back to direct joint-space interpolation.
-            # This ALWAYS works because HOME (all zeros) is non-colliding,
-            # and linear joint-space interpolation toward zero generally
-            # folds the arm inward.  No collision checking — operator
-            # explicitly requested HOME as a priority override.
-            self.get_logger().warn(
-                'HOME: OMPL failed — falling back to direct trajectory.')
-            trajectory = self._build_direct_home_trajectory()
-
-        self.state = State.EXECUTING
-        self._execute_trajectory(trajectory, is_home=True)
-
-        # Keep the arm joint command topic in sync with the action.  HOME
-        # bypasses the normal IK pipeline (which would otherwise update
-        # _latest_arm_joint_target on each successful tick), so without
-        # this explicit assignment the /arm_joint_commands topic would
-        # keep publishing the pre-HOME joint positions.  A hardware bridge
-        # subscribed only to the topic would never see HOME.
+        # Kick the flippers off FIRST, before arm planning.  The sequence is
+        # stepped by the flipper timer, so it runs in parallel with the arm
+        # homing below instead of waiting out up to 30 s of OMPL attempts.
         #
-        # Home pose = all arm joints at zero (the URDF-zero reference).
-        self._latest_arm_joint_target = {j: 0.0 for j in ARM_JOINTS}
+        # EXCEPT when this HOME is the FIRING-entry pose: firing homes the
+        # ARM only.  The flippers must not move unless the operator
+        # commands them by stick, so the automatic sequence is skipped and
+        # _flipper_tick keeps serving manual input throughout.
+        if self._firing_pending:
+            self.get_logger().info(
+                'HOME via FIRING entry: flippers left under manual control '
+                '(no automatic flipper homing).')
+        else:
+            self._start_flipper_home()
+
+        # Plan + execute the arm move (shared with STAIR).
+        self._move_arm_to_pose(HOME_JOINTS, label='HOME')
 
         # Success: snap state to home.  Also clear re-arm — HOME is an
         # operator-initiated override, the operator gets a clean slate.
@@ -2189,14 +2810,14 @@ class CoordinatorNode(Node):
         self.state = State.IDLE
         self.get_logger().info('Home trajectory sent.')
 
-    def _build_direct_home_trajectory(self):
-        """Build a simple joint-space trajectory from current position to
-        all-joints-zero.  Bypasses MoveIt entirely — no collision checking.
+    def _build_direct_joint_trajectory(self, target_joints, label='HOME'):
+        """Build a simple joint-space trajectory from the current position to
+        *target_joints*.  Bypasses MoveIt entirely — no collision checking.
 
-        Used as a guaranteed fallback when OMPL can't find a path home.
-        The trajectory time is computed from the largest joint displacement
-        and the slowest velocity limit, ensuring smooth motion."""
-
+        Used as the guaranteed fallback when OMPL can't find a path to a
+        priority pose.  Trajectory time is computed from the largest joint
+        displacement and a conservative speed, ensuring smooth motion.
+        """
         # Read current joint positions
         current = {}
         with self._js_lock:
@@ -2205,16 +2826,18 @@ class CoordinatorNode(Node):
             for i, jname in enumerate(js.name):
                 if jname in ARM_JOINTS:
                     current[jname] = js.position[i]
-        # Fill any missing joints with 0 (shouldn't happen in practice)
+        # Fill any missing joints with the target (no motion on that joint)
+        # rather than 0 — assuming 0 would command an unrelated joint to
+        # move when we simply have no feedback for it.
         for j in ARM_JOINTS:
             if j not in current:
-                current[j] = 0.0
+                current[j] = target_joints[j]
 
         # Compute duration from max displacement.
-        # Use conservative speed: 0.5 rad/s for revolute, 0.05 m/s for prismatic
+        # Conservative speed: 0.5 rad/s revolute, 0.05 m/s prismatic.
         max_time = 2.0  # minimum 2 seconds
         for j in ARM_JOINTS:
-            displacement = abs(current[j] - 0.0)
+            displacement = abs(current[j] - target_joints[j])
             if j == 'telescope_Joint':
                 t = displacement / 0.05   # prismatic, slow
             else:
@@ -2224,10 +2847,9 @@ class CoordinatorNode(Node):
         duration_sec = int(max_time + 1.5)
 
         self.get_logger().info(
-            f'Direct HOME trajectory: duration={duration_sec}s, '
-            f'joints={", ".join(f"{j}={current[j]:.3f}" for j in ARM_JOINTS)}')
+            f'Direct {label} trajectory: duration={duration_sec}s, '
+            f'joints={", ".join(f"{j}={current[j]:.3f}->{target_joints[j]:.3f}" for j in ARM_JOINTS)}')
 
-        # Build trajectory: current position → all zeros
         traj = JointTrajectory()
         traj.joint_names = ARM_JOINTS
 
@@ -2238,9 +2860,9 @@ class CoordinatorNode(Node):
         p0.time_from_start = Duration(sec=0, nanosec=0)
         traj.points.append(p0)
 
-        # End point (home = all zeros)
+        # End point (target pose)
         p1 = JointTrajectoryPoint()
-        p1.positions = [0.0] * len(ARM_JOINTS)
+        p1.positions = [target_joints[j] for j in ARM_JOINTS]
         p1.velocities = [0.0] * len(ARM_JOINTS)
         p1.time_from_start = Duration(sec=duration_sec, nanosec=0)
         traj.points.append(p1)
