@@ -17,8 +17,14 @@ Description=Manportable audio mic/speaker duplex link (MK32 intercom)
 #
 # Deliberately independent of robot-startup.service: audio must not be able to
 # take the robot stack down, or be taken down by it.
-After=sound.target pulseaudio.service
-Wants=pulseaudio.service
+# Both sound servers are listed because Pi OS ships either one depending on the
+# image: on a PipeWire system pulseaudio.service does not exist and that
+# ordering silently does nothing. Units that are absent are simply ignored.
+# NOTE this only ORDERS the start -- it does not wait for the USB cards to
+# enumerate or for the server to finish promoting them, which is why
+# audio_startup.sh polls for both before launching the intercom.
+After=sound.target pulseaudio.service pipewire.service pipewire-pulse.service
+Wants=pulseaudio.service pipewire-pulse.service
 
 [Service]
 Type=simple

@@ -79,6 +79,8 @@ _DEFAULT_PORT          = '/dev/ttyAMA0'
 _DEFAULT_BAUD          = 100_000
 _DEFAULT_TIMER_PERIOD  = 0.005          # seconds (200 Hz poll)
 _DEFAULT_FRAME_TIMEOUT = 0.100          # seconds (100 ms)
+_DEFAULT_OPEN_TIMEOUT  = 30.0           # seconds to keep retrying the first open
+_OPEN_RETRY_PERIOD     = 1.0            # seconds between initial-open attempts
 
 # ── Message constants (mirrored for readability) ──────────────────────────────
 _MODE_ARM   = SbusControl.CONTROL_MODE_ARM    # 0
@@ -470,11 +472,13 @@ class SbusPublisher(Node):
         self.declare_parameter('baud_rate',     _DEFAULT_BAUD)
         self.declare_parameter('timer_period',  _DEFAULT_TIMER_PERIOD)
         self.declare_parameter('frame_timeout', _DEFAULT_FRAME_TIMEOUT)
+        self.declare_parameter('open_timeout',  _DEFAULT_OPEN_TIMEOUT)
 
         port           = self.get_parameter('serial_port').value
         baud           = self.get_parameter('baud_rate').value
         timer_period   = self.get_parameter('timer_period').value
         frame_timeout  = self.get_parameter('frame_timeout').value
+        open_timeout   = self.get_parameter('open_timeout').value
 
         self._pub    = self.create_publisher(SbusControl, '/sbus/control', 10)
         self._interp = ChannelInterpreter()
@@ -489,12 +493,12 @@ class SbusPublisher(Node):
         self._safe_state_active     = False   # True while in link-lost state
         self._last_safe_publish_ns  = 0       # rate-limit for safe-state publish
 
-        try:
-            self._ser = _open_serial(port, baud)
-            self.get_logger().info(f'SBUS serial opened: {port} @ {baud} 8E2')
-        except serial.SerialException as exc:
-            self.get_logger().error(f'Cannot open serial port: {exc}')
-            raise
+        # Retry the first open: at boot the node can start before the UART is
+        # ready (overlay still settling, serial-getty still releasing the line),
+        # and a single failed open here used to kill the node for the whole
+        # session — nothing respawns it. Later I/O failures are handled by
+        # _reopen_serial() from the timer callback.
+        self._ser = self._open_serial_with_retry(port, baud, open_timeout)
 
         self._timer = self.create_timer(timer_period, self._timer_cb)
         self.get_logger().info(
@@ -623,6 +627,37 @@ class SbusPublisher(Node):
         self._pub.publish(msg)
 
     # ── Serial recovery ───────────────────────────────────────────────────────
+
+    def _open_serial_with_retry(self, port: str, baud: int,
+                                timeout_s: float) -> serial.Serial:
+        """
+        Open the port, retrying for up to timeout_s before giving up.
+
+        Used only for the FIRST open, where the port may simply not exist yet
+        on a cold boot. Raises the last SerialException if the window expires.
+        """
+        deadline = time.monotonic() + timeout_s
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                ser = _open_serial(port, baud)
+                if attempt > 1:
+                    self.get_logger().info(
+                        f'SBUS serial opened on attempt {attempt}: {port} @ {baud} 8E2')
+                else:
+                    self.get_logger().info(f'SBUS serial opened: {port} @ {baud} 8E2')
+                return ser
+            except serial.SerialException as exc:
+                if time.monotonic() >= deadline:
+                    self.get_logger().error(
+                        f'Cannot open serial port after {timeout_s:.0f}s '
+                        f'({attempt} attempts): {exc}')
+                    raise
+                self.get_logger().warning(
+                    f'Serial port {port} not ready (attempt {attempt}): {exc} '
+                    f'— retrying in {_OPEN_RETRY_PERIOD:.0f}s')
+                time.sleep(_OPEN_RETRY_PERIOD)
 
     def _reopen_serial(self) -> None:
         """

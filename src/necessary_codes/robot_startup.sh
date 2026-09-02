@@ -37,12 +37,20 @@ RECORD_BAGS_SCRIPT="${NECESSARY_CODES_DIR}/record_bags.sh"
 # "Cannot find device can_arm" and "[BRINGUP-FAULT] Drive fault (Left_Drive|
 # heartbeat lost)" -> "[BRINGUP-FATAL] Cannot operate safely. Terminating."
 # A manual restart always worked because by then everything had settled.
-# Raise this if a drive/arm heartbeat fault still shows up on a cold boot.
-BOOT_GRACE_SEC="${BOOT_GRACE_SEC:-25}"
+# This used to be 25 s of blind guessing; can_bringup.sh now POLLS for the CAN
+# interfaces to actually appear (CAN_WAIT_SEC), so this only needs to cover the
+# short gap before the USB subsystem starts enumerating at all.
+BOOT_GRACE_SEC="${BOOT_GRACE_SEC:-5}"
 
 # Seconds to wait after CAN is up before launching bringup, so the buses are
 # settled and the motor controllers are answering before any node talks to them.
-CAN_SETTLE_SEC="${CAN_SETTLE_SEC:-25}"
+# Unlike BOOT_GRACE_SEC this is a real settle window (controllers need a moment
+# to start heartbeating once the bus is up), so it shrinks rather than vanishes.
+# Raise this if a drive/arm heartbeat fault shows up on a cold boot.
+CAN_SETTLE_SEC="${CAN_SETTLE_SEC:-10}"
+
+# How many times to retry can_bringup.sh before giving up on the whole stack.
+CAN_BRINGUP_TRIES="${CAN_BRINGUP_TRIES:-3}"
 
 # Seconds to wait after the bringup launch before starting rosbag, so the
 # staggered bringup nodes (~8 x 3 s) have all created their topics first.
@@ -91,9 +99,9 @@ trap cleanup SIGTERM SIGINT
 
 # ---- Sequence -------------------------------------------------------------
 
-# 0) Let the rest of the robot catch up with the Pi (USB CAN enumeration, motor
-#    controllers powering up). See BOOT_GRACE_SEC above.
-echo "[$(date '+%F %T')] boot grace: waiting ${BOOT_GRACE_SEC}s for CAN adapters + motor controllers..."
+# 0) Short head start before touching hardware. The real waiting for the CAN
+#    adapters is done by can_bringup.sh, which polls for them. See BOOT_GRACE_SEC.
+echo "[$(date '+%F %T')] boot grace: waiting ${BOOT_GRACE_SEC}s before touching hardware..."
 sleep "${BOOT_GRACE_SEC}"
 
 # 1) CAN bring-up (needs root). Under systemd there is no TTY to type a password,
@@ -104,10 +112,25 @@ if ! sudo -n true 2>/dev/null; then
     echo "[$(date '+%F %T')] ERROR: passwordless sudo unavailable -> CAN bring-up will fail. " \
          "Add a NOPASSWD sudoers rule for ${CAN_BRINGUP} (see pi5_setup_commands.txt)." >&2
 fi
-sudo "${CAN_BRINGUP}" >"${LOG_DIR}/01_can_bringup.log" 2>&1
-can_rc=$?
+can_rc=1
+: >"${LOG_DIR}/01_can_bringup.log"          # truncate once, then append per attempt
+for try in $(seq 1 "${CAN_BRINGUP_TRIES}"); do
+    echo "--- attempt ${try}/${CAN_BRINGUP_TRIES} at $(date '+%F %T') ---" \
+        >>"${LOG_DIR}/01_can_bringup.log"
+    sudo "${CAN_BRINGUP}" >>"${LOG_DIR}/01_can_bringup.log" 2>&1
+    can_rc=$?
+    [ "${can_rc}" -eq 0 ] && break
+    echo "[$(date '+%F %T')] WARNING: can_bringup attempt ${try}/${CAN_BRINGUP_TRIES}" \
+         "exited ${can_rc} (see 01_can_bringup.log)" >&2
+done
+
+# Launching the stack against a dead CAN bus produces "[BRINGUP-FATAL] Cannot
+# operate safely" from the nodes anyway, so bail out instead. Exiting non-zero
+# lets robot-startup.service's Restart=on-failure retry the whole stack cleanly.
 if [ "${can_rc}" -ne 0 ]; then
-    echo "[$(date '+%F %T')] WARNING: can_bringup exited ${can_rc} (see 01_can_bringup.log)" >&2
+    echo "[$(date '+%F %T')] FATAL: CAN bring-up failed after ${CAN_BRINGUP_TRIES}" \
+         "attempts. Not launching the stack; systemd will retry." >&2
+    exit 1
 fi
 # Log resulting link state to the journal for quick diagnosis.
 ip -brief link show can_drive 2>&1 | head -1

@@ -8,7 +8,9 @@ Mic capture and speaker playback share one duplex callback, so the near-end
 Speex AEC needs to work.
 """
 
+import os
 import socket
+import sys
 import queue
 import threading
 
@@ -26,6 +28,12 @@ FILTER_LENGTH = 2048         # echo tail length in samples (~128 ms @ 16 kHz)
 DTYPE     = "int16"          # 2 bytes/sample
 GAIN      = 4.0              # playback volume multiplier for the soundbox
 RECONNECT_WAIT = 2.0         # seconds to wait before retrying a lost device
+
+# Card name substrings, kept in step with audio_startup.sh. Only used for the
+# log line below -- the stream itself goes through the sound server (see
+# resolve_audio_device), which is what audio_startup.sh points at these cards.
+MIC_MATCH = os.environ.get("MIC_MATCH", "UM02")
+SPK_MATCH = os.environ.get("SPK_MATCH", "UACDemo")
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -95,12 +103,74 @@ def stream_finished():
     device_lost.set()
 
 
+def resolve_audio_device():
+    """Return the PortAudio index of the sound server device.
+
+    The server is named "pipewire" on PipeWire systems and "pulse" on
+    PulseAudio ones -- this Pi is PipeWire, so both are tried in that order.
+
+    We deliberately bind the SERVER, not the USB card's raw ALSA hw: node.
+    The mic does only 44.1/48 kHz and the speaker only 48 kHz, while this
+    script wants 16 kHz mono -- only the sound server resamples that. Binding
+    the card directly reproduces "Invalid sample rate [PaErrorCode -9997]"
+    (see pi5_setup_commands.txt, section 11e).
+
+    Which physical cards the server routes to is pinned by audio_startup.sh
+    (pactl set-default-source/sink). Passing no device at all -- what this
+    script used to do -- meant PortAudio picked ALSA's "default", whose
+    routing depended on whatever the server had promoted at that instant.
+
+    Falls back to "default" if neither is exposed (PortAudio builds vary).
+    That is still better than passing no device at all, because
+    audio_startup.sh has pinned the server's defaults by then. Returns None
+    only if none of them exist, so the caller can fail loudly.
+
+    Matching by NAME, not index, is deliberate: the indices are not stable.
+    The same machine listed "default" at index 9 during boot and at index 1
+    a few minutes later, because ALSA hides card devices that are already
+    open.
+    """
+    def duplex(dev):
+        return dev["max_input_channels"] > 0 and dev["max_output_channels"] > 0
+
+    devices = list(sd.query_devices())
+    for server in ("pipewire", "pulse"):
+        for idx, dev in enumerate(devices):
+            if server in dev["name"].lower() and duplex(dev):
+                return idx
+    for idx, dev in enumerate(devices):
+        if dev["name"].lower().startswith("default") and duplex(dev):
+            print("[audio] WARNING: no 'pipewire'/'pulse' device; falling back "
+                  "to 'default'. Routing depends on the server defaults that "
+                  "audio_startup.sh pinned.", file=sys.stderr, flush=True)
+            return idx
+    return None
+
+
 print(f"Two-way audio with Speex AEC -> {PEER_IP}:{PORT}. Ctrl+C to stop.")
+print(f"[audio] expecting mic '{MIC_MATCH}', speaker '{SPK_MATCH}' "
+      f"(routing pinned by audio_startup.sh)", flush=True)
+
+device = resolve_audio_device()
+if device is None:
+    # Exit rather than open whatever PortAudio would have picked. A
+    # wrong-but-openable device opens cleanly and then runs silent forever --
+    # no exception, no stream stop -- so neither the retry loop below nor the
+    # unit's Restart=always ever fires. Failing here makes systemd retry.
+    print("[audio] FATAL: no duplex sound-server device found. Is PulseAudio/"
+          "PipeWire running in this user session? (check: pactl info)",
+          file=sys.stderr, flush=True)
+    sys.exit(1)
+
+print(f"[audio] bound to device {device}: {sd.query_devices(device)['name']}",
+      flush=True)
+
 while True:
     try:
         device_lost.clear()
         stream = sd.Stream(samplerate=RATE, blocksize=FRAME_SIZE, dtype=DTYPE,
-                           channels=CHANNELS, callback=callback,
+                           channels=CHANNELS, device=(device, device),
+                           callback=callback,
                            finished_callback=stream_finished)
         with stream:
             print("Audio device open.", flush=True)
@@ -124,4 +194,12 @@ while True:
             sd._initialize()
         except Exception:
             pass
+        # The re-init invalidates device indices, so re-resolve rather than
+        # reusing a stale one. Keep the old index if the rescan comes up empty
+        # (server still restarting) -- the next loop will just retry.
+        rescanned = resolve_audio_device()
+        if rescanned is not None and rescanned != device:
+            device = rescanned
+            print(f"[audio] rebound to device {device}: "
+                  f"{sd.query_devices(device)['name']}", flush=True)
         sd.sleep(int(RECONNECT_WAIT * 1000))

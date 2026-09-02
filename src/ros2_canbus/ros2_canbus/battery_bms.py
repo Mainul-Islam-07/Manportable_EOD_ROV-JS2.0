@@ -36,6 +36,12 @@ ADC_ADDR = int(os.environ.get('ADC_ADDR', '0x48'), 16)
 ADC_CHANNEL = int(os.environ.get('ADC_CHANNEL', '0'))  # 0..3 -> A0..A3
 ADC_AVG_N = int(os.environ.get('ADC_AVG_N', '10'))       # moving-average sample count
 
+# Seconds to keep retrying the FIRST ADC open before giving up. At boot this node
+# can start before the I2C bus/ADS1115 have finished powering up; a single failed
+# open used to exit the node for the whole session, with nothing to respawn it.
+ADC_OPEN_TIMEOUT = float(os.environ.get('ADC_OPEN_TIMEOUT', '30'))
+ADC_OPEN_RETRY_S = 1.0   # seconds between initial-open attempts
+
 INTERVAL = 1.0
 
 # Pack-voltage EMA (exponential moving average), persistent across polls - smooths
@@ -88,6 +94,28 @@ def open_adc():
     return chan
 
 
+def open_adc_with_retry(timeout_s):
+    """Open the ADC, retrying for up to timeout_s before re-raising.
+
+    Only for the first open, where the bus may not be up yet on a cold boot.
+    A bad ADC_CHANNEL is a config error, not a timing one, so it fails fast.
+    """
+    deadline = time.monotonic() + timeout_s
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return open_adc()
+        except ValueError:
+            raise                       # misconfigured channel — retrying won't help
+        except (OSError, RuntimeError) as e:
+            if time.monotonic() >= deadline:
+                raise
+            print(f'ADS1115 not ready (attempt {attempt}): {e} — '
+                  f'retrying in {ADC_OPEN_RETRY_S:.0f}s', file=sys.stderr)
+            time.sleep(ADC_OPEN_RETRY_S)
+
+
 def read_pack_v(chan, n):
     """Average n raw ADC voltage samples, then undo the divider."""
     total = 0.0
@@ -109,9 +137,10 @@ def main(args=None):
     signal.signal(signal.SIGTERM, stop)
 
     try:
-        chan = open_adc()
+        chan = open_adc_with_retry(ADC_OPEN_TIMEOUT)
     except (ValueError, OSError, RuntimeError) as e:
-        print(f'Cannot open ADS1115 (addr={hex(ADC_ADDR)}): {e}', file=sys.stderr)
+        print(f'Cannot open ADS1115 (addr={hex(ADC_ADDR)}) after '
+              f'{ADC_OPEN_TIMEOUT:.0f}s: {e}', file=sys.stderr)
         print('Check I2C is enabled, wiring to SDA/SCL, ADDR pin strapping, and '
               'ADC_ADDR/ADC_CHANNEL env vars.', file=sys.stderr)
         sys.exit(1)
