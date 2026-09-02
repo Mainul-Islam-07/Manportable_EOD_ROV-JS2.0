@@ -278,8 +278,11 @@ class MotorController(Node):
             self.get_logger().warn(f"{TOPIC_ARM_CMD} missing {e}")
             return
 
-        q_right_diff = q_shoulder + q_elbow
-        q_left_diff  = q_shoulder - q_elbow
+        # Differential mix (keep in sync with the inverse in
+        # _publish_joint_states):
+        #   shoulder + -> L +, R -      elbow + -> L -, R -
+        q_right_diff = -(q_shoulder + q_elbow)
+        q_left_diff  =   q_shoulder - q_elbow
 
         tele_cfg  = self._cfg['Telescopic']
         tele_revs = q_tele_m / self._tele_lead if self._tele_lead != 0.0 else 0.0
@@ -584,8 +587,10 @@ class MotorController(Node):
                     self._read_csp_pos_cnt('Right_Differential'))
                 L_pos = self._cfg['Left_Differential'].counts_to_rad(
                     self._read_csp_pos_cnt('Left_Differential'))
-                q_shoulder = 0.5 * (R_pos + L_pos)
-                q_elbow    = 0.5 * (R_pos - L_pos)
+                # Inverse of the mix in _on_arm_cmd:
+                #   L = s - e ,  R = -(s + e)
+                q_shoulder =  0.5 * (L_pos - R_pos)
+                q_elbow    = -0.5 * (L_pos + R_pos)
             else:
                 q_shoulder = self._loopback_positions[1]
                 q_elbow    = self._loopback_positions[2]
