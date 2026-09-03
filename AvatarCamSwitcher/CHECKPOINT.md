@@ -62,8 +62,9 @@ Transitive from the RTSP lib: `media3-exoplayer:1.9.3` (+ siblings),
    (`LOW_LATENCY_SPS_REWRITE = false`), switch SERIALIZED via the
    `onRtspStatusDisconnected` callback (with an 800 ms timeout fallback), and a
    black `transition_cover` that lifts on `onRtspFirstFrameRendered`.
-7. **FRONT/BACK upside down** → per-feed `videoRotation` (180 for FRONT/BACK, 0
-   for the rest), applied via `MediaFormat.KEY_ROTATION` (decoder hint, no CPU).
+7. **FRONT/BACK/WRIST/GRIP upside down** → per-feed `videoRotation` (180 for all
+   four R1M feeds, 0 for MAIN), applied via `MediaFormat.KEY_ROTATION` (decoder
+   hint, no CPU).
 8. **Dropped the status overlay** ("MAIN — LIVE" etc.) — active camera is shown by
    the highlighted nav button.
 9. **Recording = whole-screen capture** (replaced the per-camera muxer). Uses

@@ -55,8 +55,8 @@ class MainActivity : AppCompatActivity() {
     enum class CameraFeed(val label: String, val url: String, val rotation: Int) {
         FRONT("FRONT CAM", "rtsp://192.168.144.65:8554/main.264", 180),  // upside-down mount
         BACK ("BACK CAM",  "rtsp://192.168.144.66:8554/main.264", 180),  // upside-down mount
-        WRIST("WRIST CAM", "rtsp://192.168.144.67:8554/main.264", 0),
-        GRIP ("GRIP CAM",  "rtsp://192.168.144.68:8554/main.264", 0),
+        WRIST("WRIST CAM", "rtsp://192.168.144.67:8554/main.264", 180),  // upside-down mount
+        GRIP ("GRIP CAM",  "rtsp://192.168.144.68:8554/main.264", 180),  // upside-down mount
         MAIN ("MAIN CAM",  "rtsp://192.168.144.25:8554/main.264", 0)
     }
 
